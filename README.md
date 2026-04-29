@@ -1,4 +1,4 @@
-# Vps-Zsh-TagBoard 🏷️
+# vps-zsh-tag 🏷️
 
 Debian 延伸版专用 Zsh 看板脚本，为你的 VPS 终端提供优雅的信息展示和现代化的 Zsh 体验。
 
@@ -46,7 +46,7 @@ Debian 延伸版专用 Zsh 看板脚本，为你的 VPS 终端提供优雅的信
 ## 🚀 快速安装
 
 ```bash
-bash -c "$(curl -s https://raw.githubusercontent.com/rsdgnchen/Vps-Zsh-TagBoard/main/install.sh)"
+bash -c "$(curl -s https://raw.githubusercontent.com/rsdgnchen/vps-zsh-tag/main/install.sh)"
 ```
 
 ## 📖 使用方法
