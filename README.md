@@ -46,7 +46,7 @@ Debian 延伸版专用 Zsh 看板脚本，为你的 VPS 终端提供优雅的信
 ## 🚀 快速安装
 
 ```bash
-bash -c "$(curl -s https://raw.githubusercontent.com/CHERISHTOBY/Vps-Zsh-TagBoard/main/install.sh)"
+bash -c "$(curl -s https://raw.githubusercontent.com/rsdgnchen/Vps-Zsh-TagBoard/main/install.sh)"
 ```
 
 ## 📖 使用方法
