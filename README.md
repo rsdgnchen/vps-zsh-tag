@@ -1,12 +1,14 @@
 # vps-zsh-tag 🏷️
 
-Debian 延伸版专用 Zsh 看板脚本，为你的 VPS 终端提供优雅的信息展示和现代化的 Zsh 体验。
+Debian / Alpine 通用 Zsh 看板脚本，为你的 VPS 终端提供优雅的信息展示和现代化的 Zsh 体验。
+
+支持系统：Debian 及其衍生版（Ubuntu、Kali、Raspbian、Pop!_OS、Deepin、Devuan 等）与 Alpine Linux。
 
 ## ✨ 功能特性
 
 ### 🎨 智能终端美化
 - 自动安装并配置 Zsh Shell
-- 根据操作系统自动着色（Debian/Ubuntu/Kali/Raspbian/Pop!_OS/Deepin/Devuan 等）
+- 根据操作系统自动着色（Debian/Ubuntu/Kali/Raspbian/Pop!_OS/Deepin/Devuan/Alpine 等）
 - **目录/文件彩色显示**：`ls` 输出按文件类型着色，Tab 补全列表同样着色（`LS_COLORS`）
 - 增强的命令补全功能（菜单式选择）
 - **可选历史记录开关**：安装 Zsh 后询问是否开启，默认不开启
@@ -24,7 +26,7 @@ Debian 延伸版专用 Zsh 看板脚本，为你的 VPS 终端提供优雅的信
 ### 🔧 管理功能
 - **一键安装**：完整配置 Zsh + 看板
 - **安全移除**：仅移除看板，保留 Zsh 配置
-- **彻底卸载**：还原 Bash、清除所有配置、可选移除 Zsh 包
+- **彻底卸载**：还原默认 Shell、清除所有配置、可选移除 Zsh 包
 - **自动备份**：安装前自动备份原有 `.zshrc`
 - **权限安全**：禁止对 root 用户配置，自动设置 sudo 免密
 
@@ -42,12 +44,23 @@ Debian 延伸版专用 Zsh 看板脚本，为你的 VPS 终端提供优雅的信
 
 [Raspbian GNU/Linux 12] 4C/4GB
 ∞ • 树莓派4B • 折腾用 • 随便玩
+
+[Alpine Linux v3.21] 2C/2GB
+2026-05-01 (18d) • 微型机 • 东京 • Alpine 也能用
 ```
 
 ## 🚀 快速安装
 
+**Debian / Ubuntu 等衍生版**（系统自带 bash）：
+
 ```bash
 bash -c "$(curl -s https://raw.githubusercontent.com/rsdgnchen/vps-zsh-tag/main/install.sh)"
+```
+
+**Alpine Linux**（默认不含 bash，需先安装；脚本会自动安装 zsh、coreutils、sudo 等）：
+
+```bash
+apk add --no-cache bash curl && bash -c "$(curl -s https://raw.githubusercontent.com/rsdgnchen/vps-zsh-tag/main/install.sh)"
 ```
 
 ## 📖 使用方法
@@ -73,7 +86,7 @@ bash -c "$(curl -s https://raw.githubusercontent.com/rsdgnchen/vps-zsh-tag/main/
 | **1) 完整安装** | 完整安装 Zsh + 看板系统 | 安装 Zsh，配置 Shell，创建看板 |
 | **2) 仅安装Zsh** | 仅配置 Zsh 和 sudo 免密 | 安装 Zsh，配置 Shell，无看板交互 |
 | **3) 卸载看板** | 仅删除看板文件 | 保留 Zsh 和 .zshrc 配置 |
-| **4) 彻底卸载** | 还原所有更改 | 还原 Bash，清除配置，可选移除 Zsh |
+| **4) 彻底卸载** | 还原所有更改 | 还原默认 Shell（Debian 为 bash，Alpine 为 ash），清除配置，可选移除 Zsh |
 
 ### 安装流程
 
@@ -120,13 +133,31 @@ bash -c "$(curl -s https://raw.githubusercontent.com/rsdgnchen/vps-zsh-tag/main/
 
 ## 🛠️ 系统要求
 
-- **操作系统**：Debian 及其衍生版（Ubuntu、Kali、Raspbian 等）
+- **操作系统**：Debian 及其衍生版（Ubuntu、Kali、Raspbian 等）、Alpine Linux 3.x
 - **权限要求**：root 或 sudo 权限运行
-- **网络要求**：首次安装需下载 Zsh 包
+- **网络要求**：首次安装需下载 Zsh 等软件包
+
+### Alpine 说明
+
+脚本在 Alpine 上会自动做以下适配：
+
+- 使用 `apk` 安装 `zsh`、`zsh-syntax-highlighting`、`zsh-autosuggestions`、`coreutils`、`sudo`
+- 安装 `coreutils` 以提供 GNU `date`，看板的到期天数计算依赖它；若缺失只提示一次，不会报错刷屏
+- 使用 BusyBox `adduser` 创建用户，并用 `chsh` → `usermod` → 直接修改 `/etc/passwd` 三级回退设置登录 Shell
+- 自动安装 `sudo` 并写入 `/etc/sudoers.d/<用户名>` 免密配置；无法安装 sudo 时以 root 身份直接执行
+- 卸载时把登录 Shell 还原为 `/bin/ash`（Debian 为 `/bin/bash`），并移除 zsh 相关包
 
 ## 🔄 更新日志
 
-### 修复: zsh 目录不显示颜色 (最新版本)
+### Alpine Linux 支持（最新版本）
+- 新增 Alpine Linux 支持：自动识别 `/etc/alpine-release`，使用 `apk` 完成安装与卸载
+- 包管理、用户创建（BusyBox `adduser`）、主目录查询（无 `getent` 时回退 awk）、登录 Shell 切换（无 `chsh` 时回退 `usermod` / `/etc/passwd`）均按发行版适配
+- Alpine 下自动安装 `coreutils`，提供 GNU `date`，保证看板到期计算与 `ls` 彩色输出正常
+- `.zshrc` 同时兼容 Debian 与 Alpine 的 zsh 插件路径；`ls --color` 不可用时自动跳过彩色别名
+- 在未安装 bash 的 Alpine 上以 `sh install.sh` 运行时会自动安装 bash 并重新执行
+- Alpine 彻底卸载时移除 zsh 相关包，并将登录 Shell 还原为 `/bin/ash`
+
+### 修复: zsh 目录不显示颜色
 - 生成的 `.zshrc` 新增 `LS_COLORS` 与 `ls --color=auto` 系列别名（`ls`/`ll`/`la`/`l`），目录及文件按类型着色
 - Tab 补全列表同步着色（`zstyle ':completion:*' list-colors`）
 

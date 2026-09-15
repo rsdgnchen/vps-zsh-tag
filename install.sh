@@ -1,25 +1,140 @@
 #!/bin/bash
 # ==========================================================
-# 脚本名称: Debian 延伸版专用 Zsh 看板脚本 (精简菜单版)
+# 脚本名称: Debian / Alpine 通用 Zsh 看板脚本 (精简菜单版)
+# 支持系统: Debian 及其衍生版 (Ubuntu/Kali/...)、Alpine Linux
 # ==========================================================
-set -euo pipefail
 
-# ---------- 基础环境与提权 ----------
-if ! command -v sudo &>/dev/null; then
-    if [ "$(id -u)" -eq 0 ]; then
-        apt update && apt install sudo -y
-    else
-        echo "错误: 请以 root 身份运行此脚本。"
-        exit 1
+# ---------- 以 bash 重新执行（Alpine 等默认不含 bash 的系统） ----------
+if [ -z "${BASH_VERSION:-}" ]; then
+    if [ -r "${0:-}" ]; then
+        if ! command -v bash >/dev/null 2>&1; then
+            if [ "$(id -u)" -eq 0 ] && command -v apk >/dev/null 2>&1; then
+                echo "未找到 bash，正在通过 apk 安装..."
+                apk add --no-cache bash
+            else
+                echo "错误: 本脚本需要 bash，请先安装（Alpine: apk add --no-cache bash）。"
+                exit 1
+            fi
+        fi
+        exec bash "$0" "$@"
     fi
-fi
-
-if [ ! -f /etc/debian_version ]; then
-    echo "错误: 此脚本仅支持 Debian 及其衍生版。"
+    echo "错误: 请使用 bash 运行本脚本（Alpine: apk add --no-cache bash）。"
     exit 1
 fi
 
+set -euo pipefail
+
+# ---------- 发行版检测 ----------
+if [ -f /etc/alpine-release ]; then
+    DISTRO_FAMILY="alpine"
+elif [ -f /etc/debian_version ]; then
+    DISTRO_FAMILY="debian"
+else
+    echo "错误: 此脚本仅支持 Debian 及其衍生版、Alpine Linux。"
+    exit 1
+fi
+
+# ---------- 包管理器封装 ----------
+pkg_update() {
+    case "$DISTRO_FAMILY" in
+        alpine) sudo apk update ;;
+        debian) sudo apt update ;;
+    esac
+}
+
+pkg_install() {
+    case "$DISTRO_FAMILY" in
+        alpine) sudo apk add "$@" ;;
+        debian) sudo apt install -y "$@" ;;
+    esac
+}
+
+pkg_purge() {
+    case "$DISTRO_FAMILY" in
+        alpine) sudo apk del "$@" ;;
+        debian) sudo apt remove --purge -y "$@" && sudo apt autoremove --purge -y ;;
+    esac
+}
+
+# ---------- 提权 ----------
+HAVE_REAL_SUDO=false
+ensure_sudo() {
+    if type -P sudo >/dev/null 2>&1; then
+        HAVE_REAL_SUDO=true
+        return 0
+    fi
+    if [ "$(id -u)" -ne 0 ]; then
+        echo "错误: 未找到 sudo，请以 root 身份运行此脚本，或先手动安装 sudo。"
+        exit 1
+    fi
+    # 以 root 身份直接执行；先提供临时 sudo 兼容层，供安装 sudo 使用
+    sudo() { "$@"; }
+    echo "未找到 sudo，正在尝试安装..."
+    pkg_update || true
+    pkg_install sudo || true
+    if type -P sudo >/dev/null 2>&1; then
+        HAVE_REAL_SUDO=true
+        unset -f sudo
+    else
+        echo -e "\e[1;33m警告: sudo 安装失败，将以 root 身份直接执行（跳过 sudo 免密配置）。\e[0m"
+    fi
+}
+
+# ---------- 通用工具函数 ----------
+# 读取用户主目录（Alpine 的 BusyBox 通常没有 getent）
+get_home_dir() {
+    local user=$1 home=""
+    if command -v getent >/dev/null 2>&1; then
+        home=$(getent passwd "$user" 2>/dev/null | cut -d: -f6) || true
+    fi
+    if [ -z "$home" ] && [ -r /etc/passwd ]; then
+        home=$(awk -F: -v u="$user" '$1==u {print $6; exit}' /etc/passwd)
+    fi
+    printf '%s\n' "$home"
+}
+
+# 修改登录 Shell（Alpine 的 BusyBox 通常没有 chsh，回退到 usermod 或直接改 /etc/passwd）
+set_login_shell() {
+    local user=$1 shell=$2
+    if command -v chsh >/dev/null 2>&1 && sudo chsh -s "$shell" "$user" 2>/dev/null; then
+        return 0
+    fi
+    if command -v usermod >/dev/null 2>&1 && sudo usermod -s "$shell" "$user" 2>/dev/null; then
+        return 0
+    fi
+    echo "提示: 未找到 chsh/usermod，直接修改 /etc/passwd 设置登录 Shell。"
+    sudo cp /etc/passwd /etc/passwd.vps-zsh-tag.bak 2>/dev/null || true
+    if ! sudo sed -i "s#^\($user:[^:]*:[^:]*:[^:]*:[^:]*:[^:]*:\)[^:]*#\1$shell#" /etc/passwd; then
+        echo -e "\e[1;31m警告: 登录 Shell 修改失败，请手动执行: chsh -s $shell $user\e[0m"
+        return 1
+    fi
+}
+
+# 交互式选择目标用户（禁止 root）
+prompt_target_user() {
+    local default_user="$REAL_USER"
+    [ "$default_user" = "root" ] && default_user=""
+    while true; do
+        if [ -n "$default_user" ]; then
+            read -re -p "请输入要配置的用户名 (默认 '$default_user'): " TARGET_USER
+            TARGET_USER="${TARGET_USER:-$default_user}"
+        else
+            read -re -p "请输入要配置的用户名 (不能为 root): " TARGET_USER
+        fi
+        if [ -z "$TARGET_USER" ]; then
+            echo -e "\e[1;31m输入错误：用户名不能为空。\e[0m"
+            continue
+        fi
+        if [ "$TARGET_USER" = "root" ]; then
+            echo -e "\e[1;31m安全限制：禁止对 root 执行此操作，请重新输入。\e[0m"
+            continue
+        fi
+        break
+    done
+}
+
 REAL_USER="${SUDO_USER:-$(whoami)}"
+ensure_sudo
 
 # ---------- 函数定义 ----------
 
@@ -39,13 +154,21 @@ write_zshrc() {
     sudo tee "$zshrc" > /dev/null << 'ZSHRC_HEAD_EOF'
 # VPS-ZSH-TAGBOARD
 
-# 语法高亮
-[[ -f /usr/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh ]] && \
-    source /usr/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh
+# 语法高亮（兼容 Debian / Alpine 的安装路径）
+for _zsh_hl in \
+    /usr/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh \
+    /usr/share/zsh/plugins/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh; do
+    [[ -f $_zsh_hl ]] && source $_zsh_hl && break
+done
+unset _zsh_hl
 
-# 自动建议（根据历史记录提示命令）
-[[ -f /usr/share/zsh-autosuggestions/zsh-autosuggestions.zsh ]] && \
-    source /usr/share/zsh-autosuggestions/zsh-autosuggestions.zsh
+# 自动建议（根据历史记录提示命令；兼容 Debian / Alpine 路径）
+for _zsh_as in \
+    /usr/share/zsh-autosuggestions/zsh-autosuggestions.zsh \
+    /usr/share/zsh/plugins/zsh-autosuggestions/zsh-autosuggestions.zsh; do
+    [[ -f $_zsh_as ]] && source $_zsh_as && break
+done
+unset _zsh_as
 
 # 补全系统初始化
 autoload -Uz compinit && compinit
@@ -55,10 +178,12 @@ zstyle ':completion:*' menu select
 autoload -U colors && colors
 export LS_COLORS='di=1;34:ln=1;36:so=1;35:pi=1;33:ex=1;32:bd=1;33;40:cd=1;33;40:su=1;35;41:sg=1;30;43:tw=1;33;41:ow=1;33;42'
 zstyle ':completion:*' list-colors "${(s.:.)LS_COLORS}"
-alias ls='ls --color=auto'
-alias ll='ls -lh --color=auto'
-alias la='ls -lAh --color=auto'
-alias l='ls -CF --color=auto'
+if ls --color=auto >/dev/null 2>&1; then
+    alias ls='ls --color=auto'
+    alias ll='ls -lh --color=auto'
+    alias la='ls -lAh --color=auto'
+    alias l='ls -CF --color=auto'
+fi
 
 ZSHRC_HEAD_EOF
 
@@ -100,7 +225,7 @@ if [[ -f /etc/os-release ]]; then
    OS_ID=$(grep -E '^ID=' /etc/os-release | cut -d= -f2 | tr -d '"')
 fi
 typeset -A colors
-colors=(debian 125 ubuntu 202 kali 231 raspbian 125 pop 202 deepin 125 devuan 60 default 10)
+colors=(debian 125 ubuntu 202 kali 231 raspbian 125 pop 202 deepin 125 devuan 60 alpine 39 default 10)
 MY_CLR=${colors[$OS_ID]:-$colors[default]}
 PROMPT="%F{$MY_CLR}%n@%m%f:%F{blue}%~%f%# "
 ZSHRC_TAIL_EOF
@@ -109,7 +234,24 @@ ZSHRC_TAIL_EOF
 # 安装基础 Zsh 环境（公共部分：Zsh包 + 用户 + sudo免密 + .zshrc）
 setup_zsh_base() {
     echo -e "\n\e[1;32m>>> 开始安装 Zsh 基础环境 <<<\e[0m"
-    sudo apt update && sudo apt install zsh grep zsh-syntax-highlighting zsh-autosuggestions -y
+    pkg_update
+    pkg_install zsh
+    if ! command -v zsh >/dev/null 2>&1; then
+        echo -e "\e[1;31m错误: zsh 安装失败，无法继续。\e[0m"
+        exit 1
+    fi
+
+    # Debian 需要 grep；Alpine 需要 coreutils（GNU date/ls，看板日期与彩色输出依赖）
+    if [ "$DISTRO_FAMILY" = "alpine" ]; then
+        pkg_install coreutils || echo -e "\e[1;33m警告: coreutils 安装失败，看板日期计算可能异常。\e[0m"
+    else
+        pkg_install grep || true
+    fi
+
+    # 语法高亮 / 自动建议为可选依赖，安装失败不影响基础环境
+    for _plugin in zsh-syntax-highlighting zsh-autosuggestions; do
+        pkg_install "$_plugin" || echo -e "\e[1;33m警告: 插件 $_plugin 安装失败，已跳过。\e[0m"
+    done
 
     # 历史记录选项（默认不开启，开启后记录 5000 条）
     read -re -p "是否开启命令历史记录？(y/N，默认不开启): " ENABLE_HIST
@@ -122,37 +264,41 @@ setup_zsh_base() {
     fi
 
     # 确定目标用户（禁止 root）
-    while true; do
-        read -re -p "请输入要配置的用户名 (默认 '$REAL_USER'): " TARGET_USER
-        TARGET_USER="${TARGET_USER:-$REAL_USER}"
-        if [ "$TARGET_USER" = "root" ]; then
-            echo -e "\e[1;31m安全限制：禁止对 root 执行此操作，请重新输入。\e[0m"
-            continue
-        fi
-        break
-    done
+    prompt_target_user
 
-    # 用户创建（如缺失）
+    # 用户创建（如缺失；Alpine 使用 BusyBox 的 adduser）
     IS_NEW_USER=false
     if ! id "$TARGET_USER" &>/dev/null; then
-        sudo useradd -m -s "$(which zsh)" "$TARGET_USER"
+        if [ "$DISTRO_FAMILY" = "alpine" ]; then
+            sudo adduser -D -s "$(command -v zsh)" "$TARGET_USER"
+        else
+            sudo useradd -m -s "$(command -v zsh)" "$TARGET_USER"
+        fi
         IS_NEW_USER=true
         echo "已创建用户 $TARGET_USER，默认 Shell 为 Zsh。"
     fi
 
-    # sudo 免密
-    SUDO_FILE="/etc/sudoers.d/$TARGET_USER"
-    sudo tee "$SUDO_FILE" > /dev/null << SUDO_EOF
+    # 设置 Zsh 为默认 Shell
+    set_login_shell "$TARGET_USER" "$(command -v zsh)"
+
+    # sudo 免密（仅当系统存在真实 sudo 时）
+    if [ "$HAVE_REAL_SUDO" = true ]; then
+        SUDO_FILE="/etc/sudoers.d/$TARGET_USER"
+        sudo tee "$SUDO_FILE" > /dev/null << SUDO_EOF
 # VPS-ZSH-TAGBOARD
 $TARGET_USER ALL=(ALL) NOPASSWD:ALL
 SUDO_EOF
-    sudo chmod 0440 "$SUDO_FILE"
-
-    # 设置 Zsh 为默认 Shell
-    sudo chsh -s "$(which zsh)" "$TARGET_USER"
+        sudo chmod 0440 "$SUDO_FILE"
+    else
+        echo -e "\e[1;33m提示: 系统未安装 sudo，已跳过免密配置。\e[0m"
+    fi
 
     # 生成 .zshrc（含备份，历史记录按选项生成）
-    TARGET_HOME=$(getent passwd "$TARGET_USER" | cut -d: -f6)
+    TARGET_HOME=$(get_home_dir "$TARGET_USER")
+    if [ -z "$TARGET_HOME" ] || [ ! -d "$TARGET_HOME" ]; then
+        echo -e "\e[1;31m错误: 无法确定用户 $TARGET_USER 的主目录。\e[0m"
+        exit 1
+    fi
     write_zshrc "$TARGET_HOME" "$ENABLE_HIST"
 
     # 修正权限
@@ -213,7 +359,7 @@ do_install() {
     done
 
     # 系统静态信息
-    CPU_CORES=$(nproc)
+    CPU_CORES=$(nproc 2>/dev/null || grep -c '^processor' /proc/cpuinfo 2>/dev/null || echo 1)
     MEM_RAW=$(( $(grep MemTotal /proc/meminfo | awk '{print $2}') / 1024 ))
     if [ "$MEM_RAW" -lt 900 ]; then
         MEM_SIZE="${MEM_RAW}MB"
@@ -236,6 +382,12 @@ do_install() {
     sudo tee "$WELCOME_SH" > /dev/null << 'WELCOME_EOF'
 #!/bin/zsh
 source ~/.welcome.conf
+
+# Alpine/BusyBox 兼容性检查：到期计算依赖 GNU date（Alpine 需安装 coreutils）
+if ! date -d "2000-01-01 +1 month -1 day" +%d >/dev/null 2>&1; then
+    echo -e "\e[1;33m[VPS-ZSH-TAG] 未检测到 GNU date，请安装 coreutils（Alpine: apk add coreutils）后重新登录。\e[0m"
+    return 0 2>/dev/null || exit 0
+fi
 
 WHITE='\e[0;37m'
 RED='\e[1;31m'
@@ -334,17 +486,13 @@ do_install_zsh_only() {
 
 # 仅移除看板
 do_remove_welcome() {
-    while true; do
-        read -re -p "请输入目标用户名 (默认 '$REAL_USER'): " TARGET_USER
-        TARGET_USER="${TARGET_USER:-$REAL_USER}"
-        if [ "$TARGET_USER" = "root" ]; then
-            echo -e "\e[1;31m安全限制：禁止对 root 执行此操作，请重新输入。\e[0m"
-            continue
-        fi
-        break
-    done
+    prompt_target_user
 
-    TARGET_HOME=$(getent passwd "$TARGET_USER" | cut -d: -f6)
+    TARGET_HOME=$(get_home_dir "$TARGET_USER")
+    if [ -z "$TARGET_HOME" ]; then
+        echo -e "\e[1;31m错误: 用户 $TARGET_USER 不存在。\e[0m"
+        return 1
+    fi
     FILES=("$TARGET_HOME/.welcome.sh" "$TARGET_HOME/.welcome.conf" "$TARGET_HOME/.zprofile")
     echo -e "\n\e[1;33m即将删除以下文件 (若存在)：\e[0m"
     for f in "${FILES[@]}"; do
@@ -364,19 +512,20 @@ do_remove_welcome() {
 
 # 彻底卸载：还原 Shell、移除看板、可选清除 Zsh 和 sudo 配置
 do_uninstall() {
-    while true; do
-        read -re -p "请输入要卸载的目标用户名 (默认 '$REAL_USER'): " TARGET_USER
-        TARGET_USER="${TARGET_USER:-$REAL_USER}"
-        if [ "$TARGET_USER" = "root" ]; then
-            echo -e "\e[1;31m安全限制：禁止对 root 执行此操作，请重新输入。\e[0m"
-            continue
-        fi
-        break
-    done
+    prompt_target_user
+
+    if [ "$DISTRO_FAMILY" = "alpine" ]; then
+        # Alpine 的默认登录 Shell 为 /bin/ash（BusyBox），退回 /bin/sh
+        RESTORE_SHELL="/bin/ash"
+        { [ -e "$RESTORE_SHELL" ] || [ -L "$RESTORE_SHELL" ]; } || RESTORE_SHELL="/bin/sh"
+    else
+        RESTORE_SHELL="/bin/bash"
+        { [ -e "$RESTORE_SHELL" ] || [ -L "$RESTORE_SHELL" ]; } || RESTORE_SHELL="/bin/sh"
+    fi
 
     echo -e "\n\e[1;31m警告：即将对用户 $TARGET_USER 执行彻底卸载！\e[0m"
     echo "操作包括："
-    echo "  - 将默认 Shell 还原为 /bin/bash"
+    echo "  - 将默认 Shell 还原为 $RESTORE_SHELL"
     echo "  - 删除看板文件 (~/.welcome.sh, ~/.welcome.conf, ~/.zprofile)"
     echo "  - 移除 sudo 免密配置 (/etc/sudoers.d/$TARGET_USER)"
     echo "  - (可选) 彻底移除 Zsh 包"
@@ -387,15 +536,17 @@ do_uninstall() {
     fi
 
     # 还原 Shell
-    if command -v chsh &>/dev/null; then
-        sudo chsh -s /bin/bash "$TARGET_USER" || echo "警告: 还原 Shell 失败，请手动执行 chsh -s /bin/bash $TARGET_USER"
-    else
-        echo "未找到 chsh 命令，跳过 Shell 还原。"
+    if ! set_login_shell "$TARGET_USER" "$RESTORE_SHELL"; then
+        echo "警告: 还原 Shell 失败，请手动执行 chsh -s $RESTORE_SHELL $TARGET_USER"
     fi
 
     # 移除看板文件
-    TARGET_HOME=$(getent passwd "$TARGET_USER" | cut -d: -f6)
-    sudo rm -f "$TARGET_HOME/.welcome.sh" "$TARGET_HOME/.welcome.conf" "$TARGET_HOME/.zprofile"
+    TARGET_HOME=$(get_home_dir "$TARGET_USER")
+    if [ -n "$TARGET_HOME" ]; then
+        sudo rm -f "$TARGET_HOME/.welcome.sh" "$TARGET_HOME/.welcome.conf" "$TARGET_HOME/.zprofile"
+    else
+        echo "警告: 未找到用户 $TARGET_USER，跳过看板文件清理。"
+    fi
 
     # 移除 sudo 免密配置
     SUDO_FILE="/etc/sudoers.d/$TARGET_USER"
@@ -407,9 +558,19 @@ do_uninstall() {
     # 询问是否移除 Zsh 包
     read -re -p "是否彻底移除 Zsh 软件包？(y/N): " PURGE_ZSH
     if [[ "$PURGE_ZSH" =~ ^[Yy]$ ]]; then
-        sudo apt remove --purge zsh -y
-        sudo apt autoremove --purge -y
-        echo "Zsh 包已移除。"
+        if [ "$DISTRO_FAMILY" = "alpine" ]; then
+            if pkg_purge zsh zsh-syntax-highlighting zsh-autosuggestions; then
+                echo "Zsh 及相关包已移除。"
+            else
+                echo "警告: 部分 Zsh 相关包移除失败，请手动执行 apk del。"
+            fi
+        else
+            if pkg_purge zsh; then
+                echo "Zsh 包已移除。"
+            else
+                echo "警告: Zsh 包移除失败。"
+            fi
+        fi
     fi
 
     echo -e "\e[1;32m卸载完成。请手动检查 .zshrc 是否需要删除（如不再使用 Zsh）。\e[0m"
