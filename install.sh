@@ -300,13 +300,10 @@ setup_zsh_base() {
         exit 1
     fi
 
-    # Debian 需要 grep；Alpine/FreeBSD 需要 coreutils（GNU date，看板日期计算依赖）
-    case "$DISTRO_FAMILY" in
-        alpine|freebsd)
-            pkg_install coreutils || warn "警告: coreutils 安装失败，看板日期计算可能异常。" ;;
-        *)
-            pkg_install grep || true ;;
-    esac
+    # 看板日期改为纯整数运算，不再需要 coreutils / GNU date；Debian 保留原有的 grep 安装
+    if [ "$DISTRO_FAMILY" = "debian" ]; then
+        pkg_install grep || true
+    fi
 
     # 语法高亮 / 自动建议为可选依赖，安装失败不影响基础环境
     for _plugin in zsh-syntax-highlighting zsh-autosuggestions; do
@@ -475,17 +472,27 @@ do_install() {
 #!/bin/zsh
 source ~/.welcome.conf
 
-# GNU date 兼容性检查：到期计算依赖 GNU date
-# Alpine / FreeBSD 的 coreutils 提供 gdate，系统自带的 date 是 BSD/BusyBox 版本
-DATE_CMD=date
-if ! "$DATE_CMD" -d "2000-01-01 +1 month -1 day" +%d >/dev/null 2>&1; then
-    if command -v gdate >/dev/null 2>&1 && gdate -d "2000-01-01 +1 month -1 day" +%d >/dev/null 2>&1; then
-        DATE_CMD=gdate
-    else
-        echo -e "\e[1;33m[VPS-ZSH-TAG] 未检测到 GNU date，请安装 coreutils（Alpine: apk add coreutils；FreeBSD: pkg install coreutils）后重新登录。\e[0m"
-        return 0 2>/dev/null || exit 0
-    fi
-fi
+zmodload zsh/datetime
+
+# 公历整数运算，不依赖外部 date / gdate：
+# 距 1970-01-01 的天数（proleptic Gregorian，含 100/400 闰年规则）
+_days_from_civil() {
+    local y=$1 m=$2 d=$3
+    (( m <= 2 )) && (( y-- ))
+    local era=$(( (y >= 0 ? y : y-399) / 400 ))
+    local yoe=$(( y - era*400 ))
+    local doy=$(( (153*(m + (m > 2 ? -3 : 9)) + 2)/5 + d - 1 ))
+    REPLY=$(( era*146097 + yoe*365 + yoe/4 - yoe/100 + doy - 719468 ))
+}
+
+_days_in_month() {
+    local y=$1 m=$2
+    case $m in
+        2) if (( y % 4 == 0 && (y % 100 != 0 || y % 400 == 0) )); then REPLY=29; else REPLY=28; fi ;;
+        4|6|9|11) REPLY=30 ;;
+        *) REPLY=31 ;;
+    esac
+}
 
 WHITE='\e[0;37m'
 RED='\e[1;31m'
@@ -495,31 +502,40 @@ RESET='\e[0m'
 if [ "$ADD_VAL" = "infinite" ]; then
     DISP="${WHITE}∞"
 else
-    ANCHOR_D=$SAFE_D
-    ADD_STR="$ADD_VAL"
-    INIT_M=$START_M
-    INIT_Y=$("$DATE_CMD" +%Y)
+    case $ADD_VAL in
+        "1 month") CYCLE_M=1 ;;
+        "3 month") CYCLE_M=3 ;;
+        "6 month") CYCLE_M=6 ;;
+        *)         CYCLE_M=12 ;;
+    esac
 
-    NOW_TS=$("$DATE_CMD" +%s)
-    LAST_D_INIT=$("$DATE_CMD" -d "$INIT_Y-$INIT_M-01 +1 month -1 day" +%d)
-    [ "$ANCHOR_D" -gt "$LAST_D_INIT" ] && ACT_D=$LAST_D_INIT || ACT_D=$ANCHOR_D
-    TARGET_TS=$("$DATE_CMD" -d "$INIT_Y-$INIT_M-$ACT_D 23:59:59" +%s)
+    strftime -s _today %Y-%m-%d
+    _ty=$(( 10#${_today[1,4]} ))
+    _tm=$(( 10#${_today[6,7]} ))
+    _td=$(( 10#${_today[9,10]} ))
+    _days_from_civil $_ty $_tm $_td
+    _today_days=$REPLY
 
-    LOOP_GUARD=0
-    while [ "$TARGET_TS" -lt "$NOW_TS" ] && [ "$LOOP_GUARD" -lt 100 ]; do
-        CUR_Y=$("$DATE_CMD" -d "@$TARGET_TS" +%Y)
-        CUR_M=$("$DATE_CMD" -d "@$TARGET_TS" +%m)
-        NEXT_BASE_Y=$("$DATE_CMD" -d "$CUR_Y-$CUR_M-01 + $ADD_STR" +%Y)
-        NEXT_BASE_M=$("$DATE_CMD" -d "$CUR_Y-$CUR_M-01 + $ADD_STR" +%m)
-        LAST_D_NEXT=$("$DATE_CMD" -d "$NEXT_BASE_Y-$NEXT_BASE_M-01 +1 month -1 day" +%d)
-        [ "$ANCHOR_D" -gt "$LAST_D_NEXT" ] && ACT_D=$LAST_D_NEXT || ACT_D=$ANCHOR_D
-        TARGET_TS=$("$DATE_CMD" -d "$NEXT_BASE_Y-$NEXT_BASE_M-$ACT_D 23:59:59" +%s)
-        ((LOOP_GUARD++))
+    ANCHOR_D=$(( 10#$SAFE_D ))
+    INIT_M=$(( 10#$START_M ))
+    _y=$_ty
+    _m=$INIT_M
+    _guard=0
+    while (( _guard < 100 )); do
+        _days_in_month $_y $_m
+        _last=$REPLY
+        if (( ANCHOR_D > _last )); then _d=$_last; else _d=$ANCHOR_D; fi
+        _days_from_civil $_y $_m $_d
+        _cur=$REPLY
+        (( _cur >= _today_days )) && break
+        _t=$(( _y*12 + (_m-1) + CYCLE_M ))
+        _y=$(( _t / 12 ))
+        _m=$(( _t % 12 + 1 ))
+        (( _guard++ ))
     done
 
-    EXP_DATE=$("$DATE_CMD" -d "@$TARGET_TS" +%Y-%m-%d)
-    TODAY_ZERO=$("$DATE_CMD" -d "$("$DATE_CMD" +%Y-%m-%d) 00:00:00" +%s)
-    DAYS_LEFT=$(( (TARGET_TS - TODAY_ZERO) / 86400 ))
+    printf -v EXP_DATE '%04d-%02d-%02d' $_y $_m $_d
+    DAYS_LEFT=$(( _cur - _today_days ))
 
     if [ "$DAYS_LEFT" -lt 0 ]; then
         DISP="${RED}配置异常 (✘﹏✘)"
