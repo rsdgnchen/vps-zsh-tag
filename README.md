@@ -24,6 +24,7 @@ Debian / Alpine / FreeBSD 通用 Zsh 看板脚本，为你的 VPS 终端提供�
 - **系统信息展示**：CPU 核心数、内存大小、操作系统版本
 
 ### 🔧 管理功能
+- **纯 POSIX sh 安装器**：不依赖 bash，dash / BusyBox ash / FreeBSD sh 都能直接运行
 - **一键安装**：完整配置 Zsh + 看板
 - **安全移除**：仅移除看板，保留 Zsh 配置
 - **彻底卸载**：还原默认 Shell、清除所有配置、可选移除 Zsh 包
@@ -54,25 +55,25 @@ Debian / Alpine / FreeBSD 通用 Zsh 看板脚本，为你的 VPS 终端提供�
 
 ## 🚀 快速安装
 
-**Debian / Ubuntu 等衍生版**（系统自带 bash）：
+**Debian / Ubuntu 等衍生版**（系统自带 sh，只需要 curl）：
 
-```bash
-bash -c "$(curl -s https://raw.githubusercontent.com/rsdgnchen/vps-zsh-tag/main/install.sh)"
+```sh
+sh -c "$(curl -s https://raw.githubusercontent.com/rsdgnchen/vps-zsh-tag/main/install.sh)"
 ```
 
-**Alpine Linux**（默认不含 bash，需先安装；脚本会自动安装 zsh、coreutils、sudo 等）：
+**Alpine Linux**（不需要 bash，装个 curl 就能跑；脚本会自动安装 zsh、coreutils、sudo 等）：
 
-```bash
-apk add --no-cache bash curl && bash -c "$(curl -s https://raw.githubusercontent.com/rsdgnchen/vps-zsh-tag/main/install.sh)"
+```sh
+apk add --no-cache curl && sh -c "$(curl -s https://raw.githubusercontent.com/rsdgnchen/vps-zsh-tag/main/install.sh)"
 ```
 
-**FreeBSD**（默认不含 bash，需先安装；脚本会自动安装 zsh、coreutils、sudo 等）：
+**FreeBSD**（用系统自带的 fetch，不用安装任何额外软件包）：
 
-```bash
-pkg install -y bash curl && bash -c "$(curl -s https://raw.githubusercontent.com/rsdgnchen/vps-zsh-tag/main/install.sh)"
+```sh
+sh -c "$(fetch -qo - https://raw.githubusercontent.com/rsdgnchen/vps-zsh-tag/main/install.sh)"
 ```
 
-也可以先下载再以 `sh install.sh` 运行：脚本检测到没有 bash 时会自动通过 `pkg` 安装并重新执行。
+也可以先下载再运行：`sh install.sh`。安装器本身是纯 POSIX sh（dash / BusyBox ash / FreeBSD sh 均可），不依赖 bash。
 
 ## 📖 使用方法
 
@@ -145,6 +146,7 @@ pkg install -y bash curl && bash -c "$(curl -s https://raw.githubusercontent.com
 ## 🛠️ 系统要求
 
 - **操作系统**：Debian 及其衍生版（Ubuntu、Kali、Raspbian 等）、Alpine Linux 3.x、FreeBSD 13+
+- **Shell 环境**：POSIX sh（dash / BusyBox ash / FreeBSD sh），无需 bash
 - **权限要求**：root 或 sudo 权限运行
 - **网络要求**：首次安装需下载 Zsh 等软件包
 
@@ -174,9 +176,15 @@ pkg install -y bash curl && bash -c "$(curl -s https://raw.githubusercontent.com
 
 ## 🔄 更新日志
 
-### FreeBSD 支持（最新版本）
+### 重构：安装器改为纯 POSIX sh（最新版本）
+- `install.sh` 从 bash 改为 POSIX sh：去掉 `[[ ]]`、数组、`read -e`、`declare -p`、`pipefail` 等 bash 依赖，`dash` / BusyBox ash / FreeBSD sh 都能直接运行
+- 安装时不再需要安装 bash：Debian 直接 `sh -c "$(curl ...)"`，Alpine 只需要 curl，FreeBSD 用系统自带 `fetch` 即可
+- `.welcome.conf` 改为普通 `KEY='value'` 赋值（单引号转义），由 zsh source，语义不变
+- 交互提示改用 `printf` + `read -r`（失去 bash 的行编辑，其他交互不变）
+- 已在 Debian 13、Alpine 3.21、FreeBSD 15.1 上验证安装与卸载
+
+### FreeBSD 支持
 - 新增 FreeBSD 支持：用 `uname -s` 识别系统，`pkg` 负责安装/卸载，首次运行自动接受 pkg 引导
-- 没有 bash 时自动通过 `pkg install -y bash` 安装并重新执行
 - 用户创建改用 `pw useradd -m`；`chsh` 前自动把 `/usr/local/bin/zsh` 登记进 `/etc/shells`
 - 免密配置写入 `/usr/local/etc/sudoers.d/`，并校验 sudoers 的 `includedir`
 - CPU/内存改用 `sysctl`；看板兼容 FreeBSD 的 `gdate`；插件路径补上 `/usr/local/share/`
@@ -188,7 +196,6 @@ pkg install -y bash curl && bash -c "$(curl -s https://raw.githubusercontent.com
 - 包管理、用户创建（BusyBox `adduser`）、主目录查询（无 `getent` 时回退 awk）、登录 Shell 切换（无 `chsh` 时回退 `usermod` / `/etc/passwd`）均按发行版适配
 - Alpine 下自动安装 `coreutils`，提供 GNU `date`，保证看板到期计算与 `ls` 彩色输出正常
 - `.zshrc` 同时兼容 Debian 与 Alpine 的 zsh 插件路径；`ls --color` 不可用时自动跳过彩色别名
-- 在未安装 bash 的 Alpine 上以 `sh install.sh` 运行时会自动安装 bash 并重新执行
 - Alpine 彻底卸载时移除 zsh 相关包，并将登录 Shell 还原为 `/bin/ash`
 
 ### 修复: zsh 目录不显示颜色

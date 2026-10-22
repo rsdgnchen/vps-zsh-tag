@@ -1,43 +1,53 @@
-#!/bin/bash
+#!/bin/sh
 # ==========================================================
 # 脚本名称: Debian / Alpine / FreeBSD 通用 Zsh 看板脚本 (精简菜单版)
 # 支持系统: Debian 及其衍生版 (Ubuntu/Kali/...)、Alpine Linux、FreeBSD
+# 依赖说明: 仅需 POSIX sh（dash / BusyBox ash / FreeBSD sh），无需 bash
 # ==========================================================
 
-# ---------- 以 bash 重新执行（Alpine / FreeBSD 等默认不含 bash 的系统） ----------
-if [ -z "${BASH_VERSION:-}" ]; then
-    if [ -r "${0:-}" ]; then
-        if ! command -v bash >/dev/null 2>&1; then
-            if [ "$(id -u)" -eq 0 ]; then
-                SUDO_CMD=""
-            elif command -v sudo >/dev/null 2>&1; then
-                SUDO_CMD="sudo"
-            else
-                echo "错误: 本脚本需要 bash，请先安装（Alpine: apk add --no-cache bash；FreeBSD: pkg install -y bash）。"
-                exit 1
-            fi
-            if command -v apk >/dev/null 2>&1; then
-                echo "未找到 bash，正在通过 apk 安装..."
-                $SUDO_CMD apk add --no-cache bash
-            elif command -v pkg >/dev/null 2>&1; then
-                echo "未找到 bash，正在通过 pkg 安装..."
-                $SUDO_CMD env ASSUME_ALWAYS_YES=yes pkg install -y bash
-            else
-                echo "错误: 未找到可用的包管理器，请手动安装 bash 后重新运行。"
-                exit 1
-            fi
-            if ! command -v bash >/dev/null 2>&1; then
-                echo "错误: bash 安装失败，请手动安装后重新运行。"
-                exit 1
-            fi
-        fi
-        exec bash "$0" "$@"
-    fi
-    echo "错误: 请使用 bash 运行本脚本（Alpine: apk add --no-cache bash；FreeBSD: pkg install -y bash）。"
-    exit 1
-fi
+set -eu
 
-set -euo pipefail
+# ---------- 输出与输入 ----------
+C_RED='\033[1;31m'
+C_GREEN='\033[1;32m'
+C_YELLOW='\033[1;33m'
+C_RESET='\033[0m'
+
+say()  { printf '%b\n' "$*"; }
+warn() { printf '%b\n' "${C_YELLOW}$*${C_RESET}"; }
+fail() { printf '%b\n' "${C_RED}$*${C_RESET}"; }
+
+# 交互读取（POSIX sh 的 read 没有 -p / -e，提示符单独写到 stderr）
+ask() {
+    printf '%s' "$1" >&2
+    read -r "$2"
+}
+
+# 截断到 120 个字符：zsh 此时已安装，用它保证多字节字符不会被截断
+clip() {
+    if command -v zsh >/dev/null 2>&1; then
+        zsh -fc 'print -rn -- "${1[1,120]}"' _ "$1"
+    else
+        printf '%.120s' "$1"
+    fi
+}
+
+# 把值转义成可安全放进单引号的字符串（供 .welcome.conf 被 zsh source）
+sq() {
+    _s=$1
+    _o=
+    _q="'"
+    while :; do
+        case $_s in
+            *"$_q"*)
+                _o="$_o${_s%%"$_q"*}'\\''"
+                _s=${_s#*"$_q"}
+                ;;
+            *) _o="$_o$_s"; break ;;
+        esac
+    done
+    printf '%s' "$_o"
+}
 
 # ---------- 发行版检测 ----------
 if [ "$(uname -s)" = "FreeBSD" ]; then
@@ -47,7 +57,7 @@ elif [ -f /etc/alpine-release ]; then
 elif [ -f /etc/debian_version ]; then
     DISTRO_FAMILY="debian"
 else
-    echo "错误: 此脚本仅支持 Debian 及其衍生版、Alpine Linux、FreeBSD。"
+    fail "错误: 此脚本仅支持 Debian 及其衍生版、Alpine Linux、FreeBSD。"
     exit 1
 fi
 
@@ -86,12 +96,12 @@ pkg_purge() {
 # ---------- 提权 ----------
 HAVE_REAL_SUDO=false
 ensure_sudo() {
-    if type -P sudo >/dev/null 2>&1; then
+    if command -v sudo >/dev/null 2>&1; then
         HAVE_REAL_SUDO=true
         return 0
     fi
     if [ "$(id -u)" -ne 0 ]; then
-        echo "错误: 未找到 sudo，请以 root 身份运行此脚本，或先手动安装 sudo。"
+        fail "错误: 未找到 sudo，请以 root 身份运行此脚本，或先手动安装 sudo。"
         exit 1
     fi
     # 以 root 身份直接执行；先提供临时 sudo 兼容层，供安装 sudo 使用
@@ -99,11 +109,13 @@ ensure_sudo() {
     echo "未找到 sudo，正在尝试安装..."
     pkg_update || true
     pkg_install sudo || true
-    if type -P sudo >/dev/null 2>&1; then
+    # 去掉临时函数后再检测，避免 command -v 命中函数本身
+    unset -f sudo 2>/dev/null || true
+    hash -r 2>/dev/null || true
+    if command -v sudo >/dev/null 2>&1; then
         HAVE_REAL_SUDO=true
-        unset -f sudo
     else
-        echo -e "\e[1;33m警告: sudo 安装失败，将以 root 身份直接执行（跳过 sudo 免密配置）。\e[0m"
+        warn "警告: sudo 安装失败，将以 root 身份直接执行（跳过 sudo 免密配置）。"
     fi
 }
 
@@ -136,7 +148,7 @@ set_login_shell() {
     echo "提示: 未找到 chsh/usermod，直接修改 /etc/passwd 设置登录 Shell。"
     sudo cp /etc/passwd /etc/passwd.vps-zsh-tag.bak 2>/dev/null || true
     if ! sudo sed -i "s#^\($user:[^:]*:[^:]*:[^:]*:[^:]*:[^:]*:\)[^:]*#\1$shell#" /etc/passwd; then
-        echo -e "\e[1;31m警告: 登录 Shell 修改失败，请手动执行: chsh -s $shell $user\e[0m"
+        fail "警告: 登录 Shell 修改失败，请手动执行: chsh -s $shell $user"
         return 1
     fi
 }
@@ -144,20 +156,21 @@ set_login_shell() {
 # 交互式选择目标用户（禁止 root）
 prompt_target_user() {
     local default_user="$REAL_USER"
+    TARGET_USER=""
     [ "$default_user" = "root" ] && default_user=""
     while true; do
         if [ -n "$default_user" ]; then
-            read -re -p "请输入要配置的用户名 (默认 '$default_user'): " TARGET_USER
+            ask "请输入要配置的用户名 (默认 '$default_user'): " TARGET_USER
             TARGET_USER="${TARGET_USER:-$default_user}"
         else
-            read -re -p "请输入要配置的用户名 (不能为 root): " TARGET_USER
+            ask "请输入要配置的用户名 (不能为 root): " TARGET_USER
         fi
         if [ -z "$TARGET_USER" ]; then
-            echo -e "\e[1;31m输入错误：用户名不能为空。\e[0m"
+            fail "输入错误：用户名不能为空。"
             continue
         fi
         if [ "$TARGET_USER" = "root" ]; then
-            echo -e "\e[1;31m安全限制：禁止对 root 执行此操作，请重新输入。\e[0m"
+            fail "安全限制：禁止对 root 执行此操作，请重新输入。"
             continue
         fi
         break
@@ -279,43 +292,44 @@ ZSHRC_TAIL_EOF
 
 # 安装基础 Zsh 环境（公共部分：Zsh包 + 用户 + sudo免密 + .zshrc）
 setup_zsh_base() {
-    echo -e "\n\e[1;32m>>> 开始安装 Zsh 基础环境 <<<\e[0m"
+    say "\n${C_GREEN}>>> 开始安装 Zsh 基础环境 <<<${C_RESET}"
     pkg_update
     pkg_install zsh
     if ! command -v zsh >/dev/null 2>&1; then
-        echo -e "\e[1;31m错误: zsh 安装失败，无法继续。\e[0m"
+        fail "错误: zsh 安装失败，无法继续。"
         exit 1
     fi
 
     # Debian 需要 grep；Alpine/FreeBSD 需要 coreutils（GNU date，看板日期计算依赖）
     case "$DISTRO_FAMILY" in
         alpine|freebsd)
-            pkg_install coreutils || echo -e "\e[1;33m警告: coreutils 安装失败，看板日期计算可能异常。\e[0m" ;;
+            pkg_install coreutils || warn "警告: coreutils 安装失败，看板日期计算可能异常。" ;;
         *)
             pkg_install grep || true ;;
     esac
 
     # 语法高亮 / 自动建议为可选依赖，安装失败不影响基础环境
     for _plugin in zsh-syntax-highlighting zsh-autosuggestions; do
-        pkg_install "$_plugin" || echo -e "\e[1;33m警告: 插件 $_plugin 安装失败，已跳过。\e[0m"
+        pkg_install "$_plugin" || warn "警告: 插件 $_plugin 安装失败，已跳过。"
     done
 
     # 历史记录选项（默认不开启，开启后记录 5000 条）
-    read -re -p "是否开启命令历史记录？(y/N，默认不开启): " ENABLE_HIST
-    if [[ "$ENABLE_HIST" =~ ^[Yy]$ ]]; then
-        ENABLE_HIST=true
-        echo "已开启：历史记录将保留 5000 条并跨会话共享。"
-    else
-        ENABLE_HIST=false
-        echo "未开启：Zsh 不保存任何历史记录。"
-    fi
+    ask "是否开启命令历史记录？(y/N，默认不开启): " ENABLE_HIST
+    case $ENABLE_HIST in
+        [Yy])
+            ENABLE_HIST=true
+            echo "已开启：历史记录将保留 5000 条并跨会话共享。" ;;
+        *)
+            ENABLE_HIST=false
+            echo "未开启：Zsh 不保存任何历史记录。" ;;
+    esac
 
     # 确定目标用户（禁止 root）
     prompt_target_user
 
     # 用户创建（如缺失；Alpine 用 BusyBox adduser，FreeBSD 用 pw）
     IS_NEW_USER=false
-    if ! id "$TARGET_USER" &>/dev/null; then
+    if ! id "$TARGET_USER" >/dev/null 2>&1; then
         case "$DISTRO_FAMILY" in
             alpine)  sudo adduser -D -s "$(command -v zsh)" "$TARGET_USER" ;;
             freebsd) sudo pw useradd -n "$TARGET_USER" -m -s "$(command -v zsh)" ;;
@@ -334,7 +348,7 @@ setup_zsh_base() {
         sudo mkdir -p "$SUDOERS_DIR"
         # 确认 sudoers 真的 include 了这个目录，否则配置不会生效
         if ! sudo grep -qsE "^[#@]includedir[[:space:]]+$SUDOERS_DIR" /etc/sudoers /usr/local/etc/sudoers 2>/dev/null; then
-            echo -e "\e[1;33m警告: sudoers 未包含 $SUDOERS_DIR，免密配置可能不生效。\e[0m"
+            warn "警告: sudoers 未包含 $SUDOERS_DIR，免密配置可能不生效。"
         fi
         sudo tee "$SUDO_FILE" > /dev/null << SUDO_EOF
 # VPS-ZSH-TAGBOARD
@@ -342,13 +356,13 @@ $TARGET_USER ALL=(ALL) NOPASSWD:ALL
 SUDO_EOF
         sudo chmod 0440 "$SUDO_FILE"
     else
-        echo -e "\e[1;33m提示: 系统未安装 sudo，已跳过免密配置。\e[0m"
+        warn "提示: 系统未安装 sudo，已跳过免密配置。"
     fi
 
     # 生成 .zshrc（含备份，历史记录按选项生成）
     TARGET_HOME=$(get_home_dir "$TARGET_USER")
     if [ -z "$TARGET_HOME" ] || [ ! -d "$TARGET_HOME" ]; then
-        echo -e "\e[1;31m错误: 无法确定用户 $TARGET_USER 的主目录。\e[0m"
+        fail "错误: 无法确定用户 $TARGET_USER 的主目录。"
         exit 1
     fi
     write_zshrc "$TARGET_HOME" "$ENABLE_HIST"
@@ -359,54 +373,66 @@ SUDO_EOF
 
 # 完整安装（Zsh + 看板）
 do_install() {
-    echo -e "\n\e[1;32m>>> 开始完整安装 Zsh 看板 <<<\e[0m"
+    say "\n${C_GREEN}>>> 开始完整安装 Zsh 看板 <<<${C_RESET}"
     setup_zsh_base
 
     # 收集看板信息与到期参数
-    echo -e "\n--- 自定义看板信息 ---"
-    read -re -p "看板 1 (厂商/用途): " IN_P
-    IN_P="${IN_P:0:120}"
-    read -re -p "看板 2 (位置/归属): " IN_L
-    IN_L="${IN_L:0:120}"
-    read -re -p "看板 3 (网络/警示): " IN_N
-    IN_N="${IN_N:0:120}"
+    say "\n--- 自定义看板信息 ---"
+    ask "看板 1 (厂商/用途): " IN_P
+    IN_P=$(clip "$IN_P")
+    ask "看板 2 (位置/归属): " IN_L
+    IN_L=$(clip "$IN_L")
+    ask "看板 3 (网络/警示): " IN_N
+    IN_N=$(clip "$IN_N")
 
     echo "--- 到期设置 ---"
     while true; do
-        read -re -p "账单日 (1-31日，回车设为“永久”): " PAY_DAY
-        if [[ -z "$PAY_DAY" ]]; then
+        ask "账单日 (1-31日，回车设为“永久”): " PAY_DAY
+        if [ -z "$PAY_DAY" ]; then
             ADD_VAL="infinite"
             START_M="0"
             SAFE_D="0"
             break
-        elif [[ "$PAY_DAY" =~ ^[0-9]+$ ]] && [ "$PAY_DAY" -ge 1 ] && [ "$PAY_DAY" -le 31 ]; then
+        fi
+        case $PAY_DAY in
+            *[!0-9]*)
+                fail "输入错误：请好好输入日期或直接回车！(╯°□°）╯︵ ┻━┻"
+                continue ;;
+        esac
+        if [ "$PAY_DAY" -ge 1 ] && [ "$PAY_DAY" -le 31 ]; then
             while true; do
-                read -re -p "开通/续费月份 (1-12月, 默认本月): " PAY_MONTH
-                if [[ -z "$PAY_MONTH" ]]; then
+                ask "开通/续费月份 (1-12月, 默认本月): " PAY_MONTH
+                if [ -z "$PAY_MONTH" ]; then
                     START_M=$(date +%m)
                     break
-                elif [[ "$PAY_MONTH" =~ ^[0-9]+$ ]] && [ "$PAY_MONTH" -ge 1 ] && [ "$PAY_MONTH" -le 12 ]; then
+                fi
+                case $PAY_MONTH in
+                    *[!0-9]*)
+                        fail "输入错误：请好好输入月份！ (╯‵□′)╯︵┻━┻"
+                        continue ;;
+                esac
+                if [ "$PAY_MONTH" -ge 1 ] && [ "$PAY_MONTH" -le 12 ]; then
                     START_M=$PAY_MONTH
                     break
                 else
-                    echo -e "\e[1;31m输入错误：请好好输入月份！ (╯‵□′)╯︵┻━┻ \e[0m"
+                    fail "输入错误：请好好输入月份！ (╯‵□′)╯︵┻━┻"
                 fi
             done
             while true; do
                 echo "选择账单周期: 1.月付 2.季付 3.半年 4.年付（默认）"
-                read -rep "请输入编号 (1-4): " CYCLE_OPT
+                ask "请输入编号 (1-4): " CYCLE_OPT
                 case ${CYCLE_OPT:-4} in
                     1) ADD_VAL="1 month"; break ;;
                     2) ADD_VAL="3 month"; break ;;
                     3) ADD_VAL="6 month"; break ;;
                     4) ADD_VAL="1 year"; break ;;
-                    *) echo -e "\e[1;31m输入错误：请输入编号 1-4！\e[0m" ;;
+                    *) fail "输入错误：请输入编号 1-4！" ;;
                 esac
             done
             SAFE_D="$PAY_DAY"
             break
         else
-            echo -e "\e[1;31m输入错误：请好好输入日期或直接回车！(╯°□°）╯︵ ┻━┻ \e[0m"
+            fail "输入错误：请好好输入日期或直接回车！(╯°□°）╯︵ ┻━┻"
         fi
     done
 
@@ -428,10 +454,18 @@ do_install() {
 
     # TARGET_HOME 已由 setup_zsh_base 设置
 
-    # 写入配置文件（安全方式）
+    # 写入配置文件（单引号转义，zsh source 时不会二次展开）
     CONF_FILE="${TARGET_HOME}/.welcome.conf"
     {
-        declare -p IN_P IN_L IN_N ADD_VAL SAFE_D START_M CPU_CORES MEM_SIZE OS_NAME
+        printf "IN_P='%s'\n"      "$(sq "$IN_P")"
+        printf "IN_L='%s'\n"      "$(sq "$IN_L")"
+        printf "IN_N='%s'\n"      "$(sq "$IN_N")"
+        printf "ADD_VAL='%s'\n"   "$(sq "$ADD_VAL")"
+        printf "SAFE_D='%s'\n"    "$(sq "$SAFE_D")"
+        printf "START_M='%s'\n"   "$(sq "$START_M")"
+        printf "CPU_CORES='%s'\n" "$(sq "$CPU_CORES")"
+        printf "MEM_SIZE='%s'\n"  "$(sq "$MEM_SIZE")"
+        printf "OS_NAME='%s'\n"   "$(sq "$OS_NAME")"
     } | sudo tee "$CONF_FILE" > /dev/null
     sudo chown "$TARGET_USER:$TARGET_USER" "$CONF_FILE"
 
@@ -527,7 +561,7 @@ ZPROFILE_EOF
     # 统一修正权限
     sudo chown -R "$TARGET_USER:$TARGET_USER" "$TARGET_HOME"
 
-    echo -e "\n\e[1;32m状态: 配置完成！\e[0m"
+    say "\n${C_GREEN}状态: 配置完成！${C_RESET}"
     echo "------------------------------------------------"
     echo "1. 立即切换环境: exec su - $TARGET_USER"
     [ "$IS_NEW_USER" = true ] && echo "2. 新用户设置密码: sudo passwd $TARGET_USER"
@@ -537,10 +571,10 @@ ZPROFILE_EOF
 
 # 仅安装 Zsh（不含看板）
 do_install_zsh_only() {
-    echo -e "\n\e[1;32m>>> 仅安装 Zsh 基础环境 <<<\e[0m"
+    say "\n${C_GREEN}>>> 仅安装 Zsh 基础环境 <<<${C_RESET}"
     setup_zsh_base
 
-    echo -e "\n\e[1;32m状态: Zsh 基础环境配置完成！\e[0m"
+    say "\n${C_GREEN}状态: Zsh 基础环境配置完成！${C_RESET}"
     echo "------------------------------------------------"
     echo "1. 立即切换环境: exec su - $TARGET_USER"
     [ "$IS_NEW_USER" = true ] && echo "2. 新用户设置密码: sudo passwd $TARGET_USER"
@@ -554,24 +588,25 @@ do_remove_welcome() {
 
     TARGET_HOME=$(get_home_dir "$TARGET_USER")
     if [ -z "$TARGET_HOME" ]; then
-        echo -e "\e[1;31m错误: 用户 $TARGET_USER 不存在。\e[0m"
+        fail "错误: 用户 $TARGET_USER 不存在。"
         return 1
     fi
-    FILES=("$TARGET_HOME/.welcome.sh" "$TARGET_HOME/.welcome.conf" "$TARGET_HOME/.zprofile")
-    echo -e "\n\e[1;33m即将删除以下文件 (若存在)：\e[0m"
-    for f in "${FILES[@]}"; do
-        [ -f "$f" ] && echo "  $f"
+    say "\n${C_YELLOW}即将删除以下文件 (若存在)：${C_RESET}"
+    for f in "$TARGET_HOME/.welcome.sh" "$TARGET_HOME/.welcome.conf" "$TARGET_HOME/.zprofile"; do
+        if [ -f "$f" ]; then
+            echo "  $f"
+        fi
     done
-    read -re -p "确认删除？(y/N): " CONFIRM
-    if [[ ! "$CONFIRM" =~ ^[Yy]$ ]]; then
-        echo "已取消。"
-        return
-    fi
+    ask "确认删除？(y/N): " CONFIRM
+    case $CONFIRM in
+        [Yy]) ;;
+        *) echo "已取消。"; return ;;
+    esac
 
-    for f in "${FILES[@]}"; do
+    for f in "$TARGET_HOME/.welcome.sh" "$TARGET_HOME/.welcome.conf" "$TARGET_HOME/.zprofile"; do
         sudo rm -f "$f"
     done
-    echo -e "\e[1;32m看板及相关文件已移除，Zsh 配置本身未改动。\e[0m"
+    say "${C_GREEN}看板及相关文件已移除，Zsh 配置本身未改动。${C_RESET}"
 }
 
 # 彻底卸载：还原 Shell、移除看板、可选清除 Zsh 和 sudo 配置
@@ -590,17 +625,17 @@ do_uninstall() {
     esac
     { [ -e "$RESTORE_SHELL" ] || [ -L "$RESTORE_SHELL" ]; } || RESTORE_SHELL="/bin/sh"
 
-    echo -e "\n\e[1;31m警告：即将对用户 $TARGET_USER 执行彻底卸载！\e[0m"
+    fail "\n警告：即将对用户 $TARGET_USER 执行彻底卸载！"
     echo "操作包括："
     echo "  - 将默认 Shell 还原为 $RESTORE_SHELL"
     echo "  - 删除看板文件 (~/.welcome.sh, ~/.welcome.conf, ~/.zprofile)"
     echo "  - 移除 sudo 免密配置 ($SUDOERS_DIR/$TARGET_USER)"
     echo "  - (可选) 彻底移除 Zsh 包"
-    read -re -p "确认继续？(y/N): " CONFIRM
-    if [[ ! "$CONFIRM" =~ ^[Yy]$ ]]; then
-        echo "已取消。"
-        return
-    fi
+    ask "确认继续？(y/N): " CONFIRM
+    case $CONFIRM in
+        [Yy]) ;;
+        *) echo "已取消。"; return ;;
+    esac
 
     # 还原 Shell
     if ! set_login_shell "$TARGET_USER" "$RESTORE_SHELL"; then
@@ -623,24 +658,25 @@ do_uninstall() {
     fi
 
     # 询问是否移除 Zsh 包
-    read -re -p "是否彻底移除 Zsh 软件包？(y/N): " PURGE_ZSH
-    if [[ "$PURGE_ZSH" =~ ^[Yy]$ ]]; then
-        if [ "$DISTRO_FAMILY" = "alpine" ] || [ "$DISTRO_FAMILY" = "freebsd" ]; then
-            if pkg_purge zsh zsh-syntax-highlighting zsh-autosuggestions; then
-                echo "Zsh 及相关包已移除。"
+    ask "是否彻底移除 Zsh 软件包？(y/N): " PURGE_ZSH
+    case $PURGE_ZSH in
+        [Yy])
+            if [ "$DISTRO_FAMILY" = "alpine" ] || [ "$DISTRO_FAMILY" = "freebsd" ]; then
+                if pkg_purge zsh zsh-syntax-highlighting zsh-autosuggestions; then
+                    echo "Zsh 及相关包已移除。"
+                else
+                    echo "警告: 部分 Zsh 相关包移除失败，请手动移除。"
+                fi
             else
-                echo "警告: 部分 Zsh 相关包移除失败，请手动移除。"
-            fi
-        else
-            if pkg_purge zsh; then
-                echo "Zsh 包已移除。"
-            else
-                echo "警告: Zsh 包移除失败。"
-            fi
-        fi
-    fi
+                if pkg_purge zsh; then
+                    echo "Zsh 包已移除。"
+                else
+                    echo "警告: Zsh 包移除失败。"
+                fi
+            fi ;;
+    esac
 
-    echo -e "\e[1;32m卸载完成。请手动检查 .zshrc 是否需要删除（如不再使用 Zsh）。\e[0m"
+    say "${C_GREEN}卸载完成。请手动检查 .zshrc 是否需要删除（如不再使用 Zsh）。${C_RESET}"
 }
 
 # ---------- 主菜单 ----------
@@ -652,7 +688,7 @@ echo "  2) 仅安装Zsh"
 echo "  3) 卸载看板"
 echo "  4) 彻底卸载"
 echo "==================================="
-read -re -p "请输入编号 (1-4，默认1): " MENU_OPT
+ask "请输入编号 (1-4，默认1): " MENU_OPT
 MENU_OPT="${MENU_OPT:-1}"
 
 case "$MENU_OPT" in
