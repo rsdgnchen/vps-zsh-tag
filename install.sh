@@ -1,44 +1,68 @@
 #!/bin/bash
 # ==========================================================
-# 脚本名称: Debian / Alpine 通用 Zsh 看板脚本 (精简菜单版)
-# 支持系统: Debian 及其衍生版 (Ubuntu/Kali/...)、Alpine Linux
+# 脚本名称: Debian / Alpine / FreeBSD 通用 Zsh 看板脚本 (精简菜单版)
+# 支持系统: Debian 及其衍生版 (Ubuntu/Kali/...)、Alpine Linux、FreeBSD
 # ==========================================================
 
-# ---------- 以 bash 重新执行（Alpine 等默认不含 bash 的系统） ----------
+# ---------- 以 bash 重新执行（Alpine / FreeBSD 等默认不含 bash 的系统） ----------
 if [ -z "${BASH_VERSION:-}" ]; then
     if [ -r "${0:-}" ]; then
         if ! command -v bash >/dev/null 2>&1; then
-            if [ "$(id -u)" -eq 0 ] && command -v apk >/dev/null 2>&1; then
-                echo "未找到 bash，正在通过 apk 安装..."
-                apk add --no-cache bash
+            if [ "$(id -u)" -eq 0 ]; then
+                SUDO_CMD=""
+            elif command -v sudo >/dev/null 2>&1; then
+                SUDO_CMD="sudo"
             else
-                echo "错误: 本脚本需要 bash，请先安装（Alpine: apk add --no-cache bash）。"
+                echo "错误: 本脚本需要 bash，请先安装（Alpine: apk add --no-cache bash；FreeBSD: pkg install -y bash）。"
+                exit 1
+            fi
+            if command -v apk >/dev/null 2>&1; then
+                echo "未找到 bash，正在通过 apk 安装..."
+                $SUDO_CMD apk add --no-cache bash
+            elif command -v pkg >/dev/null 2>&1; then
+                echo "未找到 bash，正在通过 pkg 安装..."
+                $SUDO_CMD env ASSUME_ALWAYS_YES=yes pkg install -y bash
+            else
+                echo "错误: 未找到可用的包管理器，请手动安装 bash 后重新运行。"
+                exit 1
+            fi
+            if ! command -v bash >/dev/null 2>&1; then
+                echo "错误: bash 安装失败，请手动安装后重新运行。"
                 exit 1
             fi
         fi
         exec bash "$0" "$@"
     fi
-    echo "错误: 请使用 bash 运行本脚本（Alpine: apk add --no-cache bash）。"
+    echo "错误: 请使用 bash 运行本脚本（Alpine: apk add --no-cache bash；FreeBSD: pkg install -y bash）。"
     exit 1
 fi
 
 set -euo pipefail
 
 # ---------- 发行版检测 ----------
-if [ -f /etc/alpine-release ]; then
+if [ "$(uname -s)" = "FreeBSD" ]; then
+    DISTRO_FAMILY="freebsd"
+elif [ -f /etc/alpine-release ]; then
     DISTRO_FAMILY="alpine"
 elif [ -f /etc/debian_version ]; then
     DISTRO_FAMILY="debian"
 else
-    echo "错误: 此脚本仅支持 Debian 及其衍生版、Alpine Linux。"
+    echo "错误: 此脚本仅支持 Debian 及其衍生版、Alpine Linux、FreeBSD。"
     exit 1
 fi
+
+# sudoers 目录：FreeBSD 的 sudo 来自 pkg，配置在 /usr/local/etc 下
+case "$DISTRO_FAMILY" in
+    freebsd) SUDOERS_DIR="/usr/local/etc/sudoers.d" ;;
+    *)       SUDOERS_DIR="/etc/sudoers.d" ;;
+esac
 
 # ---------- 包管理器封装 ----------
 pkg_update() {
     case "$DISTRO_FAMILY" in
         alpine) sudo apk update ;;
         debian) sudo apt update ;;
+        freebsd) sudo env ASSUME_ALWAYS_YES=yes pkg update ;;
     esac
 }
 
@@ -46,6 +70,7 @@ pkg_install() {
     case "$DISTRO_FAMILY" in
         alpine) sudo apk add "$@" ;;
         debian) sudo apt install -y "$@" ;;
+        freebsd) sudo env ASSUME_ALWAYS_YES=yes pkg install -y "$@" ;;
     esac
 }
 
@@ -53,6 +78,8 @@ pkg_purge() {
     case "$DISTRO_FAMILY" in
         alpine) sudo apk del "$@" ;;
         debian) sudo apt remove --purge -y "$@" && sudo apt autoremove --purge -y ;;
+        freebsd) sudo env ASSUME_ALWAYS_YES=yes pkg delete -y "$@" \
+            && sudo env ASSUME_ALWAYS_YES=yes pkg autoremove -y ;;
     esac
 }
 
@@ -96,6 +123,10 @@ get_home_dir() {
 # 修改登录 Shell（Alpine 的 BusyBox 通常没有 chsh，回退到 usermod 或直接改 /etc/passwd）
 set_login_shell() {
     local user=$1 shell=$2
+    # FreeBSD 的 chsh 会校验 /etc/shells，zsh 装在 /usr/local/bin 需要先登记
+    if [ -r /etc/shells ] && ! grep -qxF "$shell" /etc/shells 2>/dev/null; then
+        printf '%s\n' "$shell" | sudo tee -a /etc/shells > /dev/null
+    fi
     if command -v chsh >/dev/null 2>&1 && sudo chsh -s "$shell" "$user" 2>/dev/null; then
         return 0
     fi
@@ -154,18 +185,20 @@ write_zshrc() {
     sudo tee "$zshrc" > /dev/null << 'ZSHRC_HEAD_EOF'
 # VPS-ZSH-TAGBOARD
 
-# 语法高亮（兼容 Debian / Alpine 的安装路径）
+# 语法高亮（兼容 Debian / Alpine / FreeBSD 的安装路径）
 for _zsh_hl in \
     /usr/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh \
-    /usr/share/zsh/plugins/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh; do
+    /usr/share/zsh/plugins/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh \
+    /usr/local/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh; do
     [[ -f $_zsh_hl ]] && source $_zsh_hl && break
 done
 unset _zsh_hl
 
-# 自动建议（根据历史记录提示命令；兼容 Debian / Alpine 路径）
+# 自动建议（根据历史记录提示命令；兼容 Debian / Alpine / FreeBSD 路径）
 for _zsh_as in \
     /usr/share/zsh-autosuggestions/zsh-autosuggestions.zsh \
-    /usr/share/zsh/plugins/zsh-autosuggestions/zsh-autosuggestions.zsh; do
+    /usr/share/zsh/plugins/zsh-autosuggestions/zsh-autosuggestions.zsh \
+    /usr/local/share/zsh-autosuggestions/zsh-autosuggestions.zsh; do
     [[ -f $_zsh_as ]] && source $_zsh_as && break
 done
 unset _zsh_as
@@ -177,12 +210,21 @@ zstyle ':completion:*' menu select
 # 目录/文件彩色显示 (ls 输出与 Tab 补全列表)
 autoload -U colors && colors
 export LS_COLORS='di=1;34:ln=1;36:so=1;35:pi=1;33:ex=1;32:bd=1;33;40:cd=1;33;40:su=1;35;41:sg=1;30;43:tw=1;33;41:ow=1;33;42'
+# FreeBSD/macOS 的 ls 使用 LSCOLORS（GNU ls 会忽略这个变量）
+export LSCOLORS='exfxcxdxbxegedabagacad'
 zstyle ':completion:*' list-colors "${(s.:.)LS_COLORS}"
 if ls --color=auto >/dev/null 2>&1; then
     alias ls='ls --color=auto'
     alias ll='ls -lh --color=auto'
     alias la='ls -lAh --color=auto'
     alias l='ls -CF --color=auto'
+elif ls -G >/dev/null 2>&1; then
+    # 老版本 FreeBSD 的 ls 只支持 -G
+    export CLICOLOR=1
+    alias ls='ls -G'
+    alias ll='ls -lhG'
+    alias la='ls -lAhG'
+    alias l='ls -CFG'
 fi
 
 ZSHRC_HEAD_EOF
@@ -224,8 +266,12 @@ bindkey "^[O" _tmux-ignore-focus
 if [[ -f /etc/os-release ]]; then
    OS_ID=$(grep -E '^ID=' /etc/os-release | cut -d= -f2 | tr -d '"')
 fi
+# FreeBSD 13/14 没有 /etc/os-release，用 uname 兜底
+if [[ -z "$OS_ID" && "$(uname -s)" == "FreeBSD" ]]; then
+   OS_ID=freebsd
+fi
 typeset -A colors
-colors=(debian 125 ubuntu 202 kali 231 raspbian 125 pop 202 deepin 125 devuan 60 alpine 39 default 10)
+colors=(debian 125 ubuntu 202 kali 231 raspbian 125 pop 202 deepin 125 devuan 60 alpine 39 freebsd '#FF4500' default 10)
 MY_CLR=${colors[$OS_ID]:-$colors[default]}
 PROMPT="%F{$MY_CLR}%n@%m%f:%F{blue}%~%f%# "
 ZSHRC_TAIL_EOF
@@ -241,12 +287,13 @@ setup_zsh_base() {
         exit 1
     fi
 
-    # Debian 需要 grep；Alpine 需要 coreutils（GNU date/ls，看板日期与彩色输出依赖）
-    if [ "$DISTRO_FAMILY" = "alpine" ]; then
-        pkg_install coreutils || echo -e "\e[1;33m警告: coreutils 安装失败，看板日期计算可能异常。\e[0m"
-    else
-        pkg_install grep || true
-    fi
+    # Debian 需要 grep；Alpine/FreeBSD 需要 coreutils（GNU date，看板日期计算依赖）
+    case "$DISTRO_FAMILY" in
+        alpine|freebsd)
+            pkg_install coreutils || echo -e "\e[1;33m警告: coreutils 安装失败，看板日期计算可能异常。\e[0m" ;;
+        *)
+            pkg_install grep || true ;;
+    esac
 
     # 语法高亮 / 自动建议为可选依赖，安装失败不影响基础环境
     for _plugin in zsh-syntax-highlighting zsh-autosuggestions; do
@@ -266,14 +313,14 @@ setup_zsh_base() {
     # 确定目标用户（禁止 root）
     prompt_target_user
 
-    # 用户创建（如缺失；Alpine 使用 BusyBox 的 adduser）
+    # 用户创建（如缺失；Alpine 用 BusyBox adduser，FreeBSD 用 pw）
     IS_NEW_USER=false
     if ! id "$TARGET_USER" &>/dev/null; then
-        if [ "$DISTRO_FAMILY" = "alpine" ]; then
-            sudo adduser -D -s "$(command -v zsh)" "$TARGET_USER"
-        else
-            sudo useradd -m -s "$(command -v zsh)" "$TARGET_USER"
-        fi
+        case "$DISTRO_FAMILY" in
+            alpine)  sudo adduser -D -s "$(command -v zsh)" "$TARGET_USER" ;;
+            freebsd) sudo pw useradd -n "$TARGET_USER" -m -s "$(command -v zsh)" ;;
+            *)       sudo useradd -m -s "$(command -v zsh)" "$TARGET_USER" ;;
+        esac
         IS_NEW_USER=true
         echo "已创建用户 $TARGET_USER，默认 Shell 为 Zsh。"
     fi
@@ -283,7 +330,12 @@ setup_zsh_base() {
 
     # sudo 免密（仅当系统存在真实 sudo 时）
     if [ "$HAVE_REAL_SUDO" = true ]; then
-        SUDO_FILE="/etc/sudoers.d/$TARGET_USER"
+        SUDO_FILE="$SUDOERS_DIR/$TARGET_USER"
+        sudo mkdir -p "$SUDOERS_DIR"
+        # 确认 sudoers 真的 include 了这个目录，否则配置不会生效
+        if ! sudo grep -qsE "^[#@]includedir[[:space:]]+$SUDOERS_DIR" /etc/sudoers /usr/local/etc/sudoers 2>/dev/null; then
+            echo -e "\e[1;33m警告: sudoers 未包含 $SUDOERS_DIR，免密配置可能不生效。\e[0m"
+        fi
         sudo tee "$SUDO_FILE" > /dev/null << SUDO_EOF
 # VPS-ZSH-TAGBOARD
 $TARGET_USER ALL=(ALL) NOPASSWD:ALL
@@ -358,15 +410,21 @@ do_install() {
         fi
     done
 
-    # 系统静态信息
-    CPU_CORES=$(nproc 2>/dev/null || grep -c '^processor' /proc/cpuinfo 2>/dev/null || echo 1)
-    MEM_RAW=$(( $(grep MemTotal /proc/meminfo | awk '{print $2}') / 1024 ))
+    # 系统静态信息（FreeBSD 没有 /proc，改用 sysctl）
+    if [ "$DISTRO_FAMILY" = "freebsd" ]; then
+        CPU_CORES=$(sysctl -n hw.ncpu 2>/dev/null || echo 1)
+        MEM_RAW=$(( $(sysctl -n hw.physmem 2>/dev/null || echo 0) / 1024 / 1024 ))
+    else
+        CPU_CORES=$(nproc 2>/dev/null || grep -c '^processor' /proc/cpuinfo 2>/dev/null || echo 1)
+        MEM_RAW=$(( $(grep MemTotal /proc/meminfo | awk '{print $2}') / 1024 ))
+    fi
     if [ "$MEM_RAW" -lt 900 ]; then
         MEM_SIZE="${MEM_RAW}MB"
     else
         MEM_SIZE="$(( (MEM_RAW + 512) / 1024 ))GB"
     fi
-    OS_NAME=$(grep "PRETTY_NAME" /etc/os-release | cut -d '"' -f 2 || uname -sr)
+    OS_NAME=$(grep "PRETTY_NAME" /etc/os-release 2>/dev/null | cut -d '"' -f 2 || uname -sr)
+    [ -n "$OS_NAME" ] || OS_NAME=$(uname -sr)
 
     # TARGET_HOME 已由 setup_zsh_base 设置
 
@@ -383,10 +441,16 @@ do_install() {
 #!/bin/zsh
 source ~/.welcome.conf
 
-# Alpine/BusyBox 兼容性检查：到期计算依赖 GNU date（Alpine 需安装 coreutils）
-if ! date -d "2000-01-01 +1 month -1 day" +%d >/dev/null 2>&1; then
-    echo -e "\e[1;33m[VPS-ZSH-TAG] 未检测到 GNU date，请安装 coreutils（Alpine: apk add coreutils）后重新登录。\e[0m"
-    return 0 2>/dev/null || exit 0
+# GNU date 兼容性检查：到期计算依赖 GNU date
+# Alpine / FreeBSD 的 coreutils 提供 gdate，系统自带的 date 是 BSD/BusyBox 版本
+DATE_CMD=date
+if ! "$DATE_CMD" -d "2000-01-01 +1 month -1 day" +%d >/dev/null 2>&1; then
+    if command -v gdate >/dev/null 2>&1 && gdate -d "2000-01-01 +1 month -1 day" +%d >/dev/null 2>&1; then
+        DATE_CMD=gdate
+    else
+        echo -e "\e[1;33m[VPS-ZSH-TAG] 未检测到 GNU date，请安装 coreutils（Alpine: apk add coreutils；FreeBSD: pkg install coreutils）后重新登录。\e[0m"
+        return 0 2>/dev/null || exit 0
+    fi
 fi
 
 WHITE='\e[0;37m'
@@ -400,27 +464,27 @@ else
     ANCHOR_D=$SAFE_D
     ADD_STR="$ADD_VAL"
     INIT_M=$START_M
-    INIT_Y=$(date +%Y)
+    INIT_Y=$("$DATE_CMD" +%Y)
 
-    NOW_TS=$(date +%s)
-    LAST_D_INIT=$(date -d "$INIT_Y-$INIT_M-01 +1 month -1 day" +%d)
+    NOW_TS=$("$DATE_CMD" +%s)
+    LAST_D_INIT=$("$DATE_CMD" -d "$INIT_Y-$INIT_M-01 +1 month -1 day" +%d)
     [ "$ANCHOR_D" -gt "$LAST_D_INIT" ] && ACT_D=$LAST_D_INIT || ACT_D=$ANCHOR_D
-    TARGET_TS=$(date -d "$INIT_Y-$INIT_M-$ACT_D 23:59:59" +%s)
+    TARGET_TS=$("$DATE_CMD" -d "$INIT_Y-$INIT_M-$ACT_D 23:59:59" +%s)
 
     LOOP_GUARD=0
     while [ "$TARGET_TS" -lt "$NOW_TS" ] && [ "$LOOP_GUARD" -lt 100 ]; do
-        CUR_Y=$(date -d "@$TARGET_TS" +%Y)
-        CUR_M=$(date -d "@$TARGET_TS" +%m)
-        NEXT_BASE_Y=$(date -d "$CUR_Y-$CUR_M-01 + $ADD_STR" +%Y)
-        NEXT_BASE_M=$(date -d "$CUR_Y-$CUR_M-01 + $ADD_STR" +%m)
-        LAST_D_NEXT=$(date -d "$NEXT_BASE_Y-$NEXT_BASE_M-01 +1 month -1 day" +%d)
+        CUR_Y=$("$DATE_CMD" -d "@$TARGET_TS" +%Y)
+        CUR_M=$("$DATE_CMD" -d "@$TARGET_TS" +%m)
+        NEXT_BASE_Y=$("$DATE_CMD" -d "$CUR_Y-$CUR_M-01 + $ADD_STR" +%Y)
+        NEXT_BASE_M=$("$DATE_CMD" -d "$CUR_Y-$CUR_M-01 + $ADD_STR" +%m)
+        LAST_D_NEXT=$("$DATE_CMD" -d "$NEXT_BASE_Y-$NEXT_BASE_M-01 +1 month -1 day" +%d)
         [ "$ANCHOR_D" -gt "$LAST_D_NEXT" ] && ACT_D=$LAST_D_NEXT || ACT_D=$ANCHOR_D
-        TARGET_TS=$(date -d "$NEXT_BASE_Y-$NEXT_BASE_M-$ACT_D 23:59:59" +%s)
+        TARGET_TS=$("$DATE_CMD" -d "$NEXT_BASE_Y-$NEXT_BASE_M-$ACT_D 23:59:59" +%s)
         ((LOOP_GUARD++))
     done
 
-    EXP_DATE=$(date -d "@$TARGET_TS" +%Y-%m-%d)
-    TODAY_ZERO=$(date -d "$(date +%Y-%m-%d) 00:00:00" +%s)
+    EXP_DATE=$("$DATE_CMD" -d "@$TARGET_TS" +%Y-%m-%d)
+    TODAY_ZERO=$("$DATE_CMD" -d "$("$DATE_CMD" +%Y-%m-%d) 00:00:00" +%s)
     DAYS_LEFT=$(( (TARGET_TS - TODAY_ZERO) / 86400 ))
 
     if [ "$DAYS_LEFT" -lt 0 ]; then
@@ -514,20 +578,23 @@ do_remove_welcome() {
 do_uninstall() {
     prompt_target_user
 
-    if [ "$DISTRO_FAMILY" = "alpine" ]; then
-        # Alpine 的默认登录 Shell 为 /bin/ash（BusyBox），退回 /bin/sh
-        RESTORE_SHELL="/bin/ash"
-        { [ -e "$RESTORE_SHELL" ] || [ -L "$RESTORE_SHELL" ]; } || RESTORE_SHELL="/bin/sh"
-    else
-        RESTORE_SHELL="/bin/bash"
-        { [ -e "$RESTORE_SHELL" ] || [ -L "$RESTORE_SHELL" ]; } || RESTORE_SHELL="/bin/sh"
-    fi
+    case "$DISTRO_FAMILY" in
+        alpine)
+            # Alpine 的默认登录 Shell 为 /bin/ash（BusyBox），退回 /bin/sh
+            RESTORE_SHELL="/bin/ash" ;;
+        freebsd)
+            # FreeBSD 普通用户默认是 /bin/sh（root 才是 /bin/csh）
+            RESTORE_SHELL="/bin/sh" ;;
+        *)
+            RESTORE_SHELL="/bin/bash" ;;
+    esac
+    { [ -e "$RESTORE_SHELL" ] || [ -L "$RESTORE_SHELL" ]; } || RESTORE_SHELL="/bin/sh"
 
     echo -e "\n\e[1;31m警告：即将对用户 $TARGET_USER 执行彻底卸载！\e[0m"
     echo "操作包括："
     echo "  - 将默认 Shell 还原为 $RESTORE_SHELL"
     echo "  - 删除看板文件 (~/.welcome.sh, ~/.welcome.conf, ~/.zprofile)"
-    echo "  - 移除 sudo 免密配置 (/etc/sudoers.d/$TARGET_USER)"
+    echo "  - 移除 sudo 免密配置 ($SUDOERS_DIR/$TARGET_USER)"
     echo "  - (可选) 彻底移除 Zsh 包"
     read -re -p "确认继续？(y/N): " CONFIRM
     if [[ ! "$CONFIRM" =~ ^[Yy]$ ]]; then
@@ -549,7 +616,7 @@ do_uninstall() {
     fi
 
     # 移除 sudo 免密配置
-    SUDO_FILE="/etc/sudoers.d/$TARGET_USER"
+    SUDO_FILE="$SUDOERS_DIR/$TARGET_USER"
     if [ -f "$SUDO_FILE" ]; then
         sudo rm -f "$SUDO_FILE"
         echo "已移除 sudo 免密配置。"
@@ -558,11 +625,11 @@ do_uninstall() {
     # 询问是否移除 Zsh 包
     read -re -p "是否彻底移除 Zsh 软件包？(y/N): " PURGE_ZSH
     if [[ "$PURGE_ZSH" =~ ^[Yy]$ ]]; then
-        if [ "$DISTRO_FAMILY" = "alpine" ]; then
+        if [ "$DISTRO_FAMILY" = "alpine" ] || [ "$DISTRO_FAMILY" = "freebsd" ]; then
             if pkg_purge zsh zsh-syntax-highlighting zsh-autosuggestions; then
                 echo "Zsh 及相关包已移除。"
             else
-                echo "警告: 部分 Zsh 相关包移除失败，请手动执行 apk del。"
+                echo "警告: 部分 Zsh 相关包移除失败，请手动移除。"
             fi
         else
             if pkg_purge zsh; then

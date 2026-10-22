@@ -1,8 +1,8 @@
 # vps-zsh-tag 🏷️
 
-Debian / Alpine 通用 Zsh 看板脚本，为你的 VPS 终端提供优雅的信息展示和现代化的 Zsh 体验。
+Debian / Alpine / FreeBSD 通用 Zsh 看板脚本，为你的 VPS 终端提供优雅的信息展示和现代化的 Zsh 体验。
 
-支持系统：Debian 及其衍生版（Ubuntu、Kali、Raspbian、Pop!_OS、Deepin、Devuan 等）与 Alpine Linux。
+支持系统：Debian 及其衍生版（Ubuntu、Kali、Raspbian、Pop!_OS、Deepin、Devuan 等）、Alpine Linux 与 FreeBSD。
 
 ## ✨ 功能特性
 
@@ -47,6 +47,9 @@ Debian / Alpine 通用 Zsh 看板脚本，为你的 VPS 终端提供优雅的信
 
 [Alpine Linux v3.21] 2C/2GB
 2026-05-01 (18d) • 微型机 • 东京 • Alpine 也能用
+
+[FreeBSD 15.1-RELEASE-p6] 4C/2GB
+2026-11-15 (24d) • 家里云 • 东京 • FreeBSD 也能用
 ```
 
 ## 🚀 快速安装
@@ -62,6 +65,14 @@ bash -c "$(curl -s https://raw.githubusercontent.com/rsdgnchen/vps-zsh-tag/main/
 ```bash
 apk add --no-cache bash curl && bash -c "$(curl -s https://raw.githubusercontent.com/rsdgnchen/vps-zsh-tag/main/install.sh)"
 ```
+
+**FreeBSD**（默认不含 bash，需先安装；脚本会自动安装 zsh、coreutils、sudo 等）：
+
+```bash
+pkg install -y bash curl && bash -c "$(curl -s https://raw.githubusercontent.com/rsdgnchen/vps-zsh-tag/main/install.sh)"
+```
+
+也可以先下载再以 `sh install.sh` 运行：脚本检测到没有 bash 时会自动通过 `pkg` 安装并重新执行。
 
 ## 📖 使用方法
 
@@ -86,7 +97,7 @@ apk add --no-cache bash curl && bash -c "$(curl -s https://raw.githubusercontent
 | **1) 完整安装** | 完整安装 Zsh + 看板系统 | 安装 Zsh，配置 Shell，创建看板 |
 | **2) 仅安装Zsh** | 仅配置 Zsh 和 sudo 免密 | 安装 Zsh，配置 Shell，无看板交互 |
 | **3) 卸载看板** | 仅删除看板文件 | 保留 Zsh 和 .zshrc 配置 |
-| **4) 彻底卸载** | 还原所有更改 | 还原默认 Shell（Debian 为 bash，Alpine 为 ash），清除配置，可选移除 Zsh |
+| **4) 彻底卸载** | 还原所有更改 | 还原默认 Shell（Debian 为 bash，Alpine 为 ash，FreeBSD 为 sh），清除配置，可选移除 Zsh |
 
 ### 安装流程
 
@@ -133,7 +144,7 @@ apk add --no-cache bash curl && bash -c "$(curl -s https://raw.githubusercontent
 
 ## 🛠️ 系统要求
 
-- **操作系统**：Debian 及其衍生版（Ubuntu、Kali、Raspbian 等）、Alpine Linux 3.x
+- **操作系统**：Debian 及其衍生版（Ubuntu、Kali、Raspbian 等）、Alpine Linux 3.x、FreeBSD 13+
 - **权限要求**：root 或 sudo 权限运行
 - **网络要求**：首次安装需下载 Zsh 等软件包
 
@@ -147,9 +158,32 @@ apk add --no-cache bash curl && bash -c "$(curl -s https://raw.githubusercontent
 - 自动安装 `sudo` 并写入 `/etc/sudoers.d/<用户名>` 免密配置；无法安装 sudo 时以 root 身份直接执行
 - 卸载时把登录 Shell 还原为 `/bin/ash`（Debian 为 `/bin/bash`），并移除 zsh 相关包
 
+### FreeBSD 说明
+
+脚本通过 `uname -s` 识别 FreeBSD（13/14 没有 `/etc/os-release` 也能正确识别），并做以下适配：
+
+- 使用 `pkg` 安装 `zsh`、`zsh-syntax-highlighting`、`zsh-autosuggestions`、`coreutils`，首次运行 `pkg` 时自动接受引导提示
+- FreeBSD 的 `coreutils` 提供的是 `gdate`，看板会自动优先用 `gdate` 完成到期计算
+- 用户创建使用 `pw useradd -m`；主目录查询优先 `getent`，找不到时回退解析 `/etc/passwd`
+- 先确认 `/usr/local/bin/zsh` 已登记进 `/etc/shells`（FreeBSD 的 `chsh` 会校验），再切换登录 Shell
+- sudo 来自 pkg，免密配置写入 `/usr/local/etc/sudoers.d/<用户名>`（并检查 sudoers 的 `includedir` 是否生效）
+- CPU/内存改用 `sysctl hw.ncpu`、`sysctl hw.physmem`（FreeBSD 没有 `/proc`）
+- 主机名颜色使用 `#FF4500`（OrangeRed），终端支持真彩色时按 24 位色显示
+- `ls` 彩色优先用 `--color=auto`（FreeBSD 15+），老版本回退到 `-G` + `LSCOLORS`
+- 卸载时把登录 Shell 还原为 `/bin/sh`，并移除 zsh 相关包
+
 ## 🔄 更新日志
 
-### Alpine Linux 支持（最新版本）
+### FreeBSD 支持（最新版本）
+- 新增 FreeBSD 支持：用 `uname -s` 识别系统，`pkg` 负责安装/卸载，首次运行自动接受 pkg 引导
+- 没有 bash 时自动通过 `pkg install -y bash` 安装并重新执行
+- 用户创建改用 `pw useradd -m`；`chsh` 前自动把 `/usr/local/bin/zsh` 登记进 `/etc/shells`
+- 免密配置写入 `/usr/local/etc/sudoers.d/`，并校验 sudoers 的 `includedir`
+- CPU/内存改用 `sysctl`；看板兼容 FreeBSD 的 `gdate`；插件路径补上 `/usr/local/share/`
+- 主机名提示符使用 `#FF4500`；`ls` 彩色兼容 BSD `-G`/`LSCOLORS`
+- 彻底卸载时登录 Shell 还原为 `/bin/sh`
+
+### Alpine Linux 支持
 - 新增 Alpine Linux 支持：自动识别 `/etc/alpine-release`，使用 `apk` 完成安装与卸载
 - 包管理、用户创建（BusyBox `adduser`）、主目录查询（无 `getent` 时回退 awk）、登录 Shell 切换（无 `chsh` 时回退 `usermod` / `/etc/passwd`）均按发行版适配
 - Alpine 下自动安装 `coreutils`，提供 GNU `date`，保证看板到期计算与 `ls` 彩色输出正常
