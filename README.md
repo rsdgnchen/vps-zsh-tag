@@ -170,7 +170,7 @@ sh -c "$(fetch -qo - https://raw.githubusercontent.com/rsdgnchen/vps-zsh-tag/mai
 - 先确认 `/usr/local/bin/zsh` 已登记进 `/etc/shells`（FreeBSD 的 `chsh` 会校验），再切换登录 Shell
 - sudo 来自 pkg，免密配置写入 `/usr/local/etc/sudoers.d/<用户名>`（并检查 sudoers 的 `includedir` 是否生效）
 - CPU/内存改用 `sysctl hw.ncpu`、`sysctl hw.physmem`（FreeBSD 没有 `/proc`）
-- 主机名颜色使用 `#FF4500`（OrangeRed），终端支持真彩色时按 24 位色显示
+- 主机名颜色使用 `#AB2B28`，终端支持真彩色时按 24 位色显示
 - `ls` 彩色优先用 `--color=auto`（FreeBSD 15+），老版本回退到 `-G` + `LSCOLORS`
 - 卸载时把登录 Shell 还原为 `/bin/sh`，并移除 zsh 相关包
 
@@ -195,7 +195,7 @@ sh -c "$(fetch -qo - https://raw.githubusercontent.com/rsdgnchen/vps-zsh-tag/mai
 - 用户创建改用 `pw useradd -m`；`chsh` 前自动把 `/usr/local/bin/zsh` 登记进 `/etc/shells`
 - 免密配置写入 `/usr/local/etc/sudoers.d/`，并校验 sudoers 的 `includedir`
 - CPU/内存改用 `sysctl`；插件路径补上 `/usr/local/share/`
-- 主机名提示符使用 `#FF4500`；`ls` 彩色兼容 BSD `-G`/`LSCOLORS`
+- 主机名提示符使用 `#AB2B28`；`ls` 彩色兼容 BSD `-G`/`LSCOLORS`
 - 彻底卸载时登录 Shell 还原为 `/bin/sh`
 
 ### Alpine Linux 支持

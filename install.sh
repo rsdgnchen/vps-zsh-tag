@@ -284,7 +284,7 @@ if [[ -z "$OS_ID" && "$(uname -s)" == "FreeBSD" ]]; then
    OS_ID=freebsd
 fi
 typeset -A colors
-colors=(debian 125 ubuntu 202 kali 231 raspbian 125 pop 202 deepin 125 devuan 60 alpine 39 freebsd '#FF4500' default 10)
+colors=(debian 125 ubuntu 202 kali 231 raspbian 125 pop 202 deepin 125 devuan 60 alpine 39 freebsd '#AB2B28' default 10)
 MY_CLR=${colors[$OS_ID]:-$colors[default]}
 PROMPT="%F{$MY_CLR}%n@%m%f:%F{blue}%~%f%# "
 ZSHRC_TAIL_EOF
