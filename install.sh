@@ -1,7 +1,7 @@
 #!/bin/sh
 # ==========================================================
-# 脚本名称: Debian / Alpine / FreeBSD 通用 Zsh 看板脚本 (精简菜单版)
-# 支持系统: Debian 及其衍生版 (Ubuntu/Kali/...)、Alpine Linux、FreeBSD
+# 脚本名称: Debian / Arch / Fedora / openSUSE / Void / Alpine / FreeBSD 通用 Zsh 看板脚本
+# 支持系统: Debian 系、Arch 系、Fedora/RHEL 系、openSUSE 系、Void Linux、Alpine Linux、FreeBSD
 # 依赖说明: 仅需 POSIX sh（dash / BusyBox ash / FreeBSD sh），无需 bash
 # ==========================================================
 
@@ -18,9 +18,14 @@ warn() { printf '%b\n' "${C_YELLOW}$*${C_RESET}"; }
 fail() { printf '%b\n' "${C_RED}$*${C_RESET}"; }
 
 # 交互读取（POSIX sh 的 read 没有 -p / -e，提示符单独写到 stderr）
+# stdin 被关闭（如 install.sh < /dev/null）时给出明确提示，而不是被 set -e 静默终止
 ask() {
     printf '%s' "$1" >&2
-    read -r "$2"
+    if ! read -r "$2"; then
+        printf '\n' >&2
+        fail "错误: 读取输入失败（标准输入已关闭），已退出。"
+        exit 1
+    fi
 }
 
 # 截断到 120 个字符：zsh 此时已安装，用它保证多字节字符不会被截断
@@ -50,14 +55,52 @@ sq() {
 }
 
 # ---------- 发行版检测 ----------
+# 支持: Debian 系、Arch 系、Fedora/RHEL 系、openSUSE 系、Void Linux、Alpine Linux、FreeBSD
+# 优先读 /etc/os-release 的 ID / ID_LIKE（覆盖各种衍生版），再按包管理器兜底
+OS_ID=""
+OS_LIKE=""
+if [ -r /etc/os-release ]; then
+    OS_ID=$( . /etc/os-release 2>/dev/null; printf '%s' "${ID:-}" ) || true
+    OS_LIKE=$( . /etc/os-release 2>/dev/null; printf '%s' "${ID_LIKE:-}" ) || true
+fi
+
+DISTRO_FAMILY=""
 if [ "$(uname -s)" = "FreeBSD" ]; then
     DISTRO_FAMILY="freebsd"
-elif [ -f /etc/alpine-release ]; then
-    DISTRO_FAMILY="alpine"
-elif [ -f /etc/debian_version ]; then
-    DISTRO_FAMILY="debian"
-else
-    fail "错误: 此脚本仅支持 Debian 及其衍生版、Alpine Linux、FreeBSD。"
+elif [ -n "$OS_ID$OS_LIKE" ]; then
+    case " $OS_ID $OS_LIKE " in
+        *" alpine "*) DISTRO_FAMILY="alpine" ;;
+        *" arch "*|*" manjaro "*|*" endeavouros "*|*" cachyos "*|*" garuda "*)
+            DISTRO_FAMILY="arch" ;;
+        *" debian "*|*" ubuntu "*|*" linuxmint "*|*" kali "*|*" raspbian "*|*" pop "*|*" deepin "*|*" devuan "*)
+            DISTRO_FAMILY="debian" ;;
+        *" fedora "*|*" rhel "*|*" centos "*|*" rocky "*|*" almalinux "*|*" ol "*|*" amzn "*|*" oracle "*)
+            DISTRO_FAMILY="fedora" ;;
+        *" opensuse "*|*" suse "*|*" sled "*|*" sles "*)
+            DISTRO_FAMILY="suse" ;;
+        *" void "*) DISTRO_FAMILY="void" ;;
+    esac
+fi
+
+# /etc/os-release 缺失或未识别时，按发行版标志文件 / 包管理器兜底
+if [ -z "$DISTRO_FAMILY" ]; then
+    if [ -f /etc/alpine-release ] || command -v apk >/dev/null 2>&1; then
+        DISTRO_FAMILY="alpine"
+    elif [ -f /etc/debian_version ] || command -v apt-get >/dev/null 2>&1; then
+        DISTRO_FAMILY="debian"
+    elif command -v pacman >/dev/null 2>&1; then
+        DISTRO_FAMILY="arch"
+    elif command -v dnf >/dev/null 2>&1 || command -v yum >/dev/null 2>&1; then
+        DISTRO_FAMILY="fedora"
+    elif command -v zypper >/dev/null 2>&1; then
+        DISTRO_FAMILY="suse"
+    elif command -v xbps-install >/dev/null 2>&1; then
+        DISTRO_FAMILY="void"
+    fi
+fi
+
+if [ -z "$DISTRO_FAMILY" ]; then
+    fail "错误: 无法识别系统。仅支持 Debian 系、Arch 系、Fedora/RHEL 系、openSUSE、Void Linux、Alpine Linux、FreeBSD。"
     exit 1
 fi
 
@@ -67,29 +110,85 @@ case "$DISTRO_FAMILY" in
     *)       SUDOERS_DIR="/etc/sudoers.d" ;;
 esac
 
+# Fedora/RHEL 系的新旧包管理器（CentOS 7 等只有 yum）
+RPM_PKG=""
+if [ "$DISTRO_FAMILY" = "fedora" ]; then
+    if command -v dnf >/dev/null 2>&1; then
+        RPM_PKG="dnf"
+    else
+        RPM_PKG="yum"
+    fi
+fi
+
+# pacman 7 的下载沙盒在部分容器 / LXC 中不可用，检测到失败时自动改用 --disable-sandbox
+PACMAN_SANDBOX=""
+
 # ---------- 包管理器封装 ----------
 pkg_update() {
     case "$DISTRO_FAMILY" in
-        alpine) sudo apk update ;;
-        debian) sudo apt update ;;
+        alpine)  sudo apk update ;;
+        debian)  sudo apt update ;;
+        arch)
+            if [ -n "$PACMAN_SANDBOX" ]; then
+                sudo pacman -Sy --noconfirm $PACMAN_SANDBOX
+            elif ! _pkg_out=$(sudo pacman -Sy --noconfirm 2>&1); then
+                warn "提示: 当前环境不支持 pacman 沙盒（常见于 LXC/容器），改用 --disable-sandbox 重试。"
+                if sudo pacman -Sy --noconfirm --disable-sandbox; then
+                    PACMAN_SANDBOX="--disable-sandbox"
+                else
+                    printf '%s\n' "$_pkg_out" >&2
+                    return 1
+                fi
+            fi ;;
+        fedora)  sudo "$RPM_PKG" -y makecache ;;
+        suse)    sudo zypper --non-interactive --gpg-auto-import-keys refresh ;;
+        void)
+            if ! sudo xbps-install -S; then
+                # 老旧系统/镜像的 xbps 可能无法解析新的仓库元数据，先自我升级再重试
+                warn "提示: xbps 版本过旧，正在升级 xbps 后重试..."
+                sudo xbps-install -S -u -y xbps || return 1
+                sudo xbps-install -S || return 1
+            fi ;;
         freebsd) sudo env ASSUME_ALWAYS_YES=yes pkg update ;;
     esac
 }
 
 pkg_install() {
     case "$DISTRO_FAMILY" in
-        alpine) sudo apk add "$@" ;;
-        debian) sudo apt install -y "$@" ;;
+        alpine)  sudo apk add "$@" ;;
+        debian)  sudo apt install -y "$@" ;;
+        # $PACMAN_SANDBOX 故意不加引号：为空时不传参数，非空时传 --disable-sandbox
+        arch)    sudo pacman -S --needed --noconfirm $PACMAN_SANDBOX "$@" ;;
+        fedora)  sudo "$RPM_PKG" install -y "$@" ;;
+        suse)    sudo zypper --non-interactive --gpg-auto-import-keys install "$@" ;;
+        void)    sudo xbps-install -y "$@" ;;
         freebsd) sudo env ASSUME_ALWAYS_YES=yes pkg install -y "$@" ;;
     esac
 }
 
 pkg_purge() {
     case "$DISTRO_FAMILY" in
-        alpine) sudo apk del "$@" ;;
-        debian) sudo apt remove --purge -y "$@" && sudo apt autoremove --purge -y ;;
+        alpine)  sudo apk del "$@" ;;
+        debian)  sudo apt remove --purge -y "$@" && sudo apt autoremove --purge -y ;;
+        arch)    sudo pacman -Rns --noconfirm "$@" ;;
+        fedora)  sudo "$RPM_PKG" remove -y "$@" && sudo "$RPM_PKG" autoremove -y ;;
+        suse)    sudo zypper --non-interactive remove --clean-deps "$@" ;;
+        void)    sudo xbps-remove -Ry "$@" ;;
         freebsd) sudo env ASSUME_ALWAYS_YES=yes pkg delete -y "$@" \
             && sudo env ASSUME_ALWAYS_YES=yes pkg autoremove -y ;;
+    esac
+}
+
+# 判断软件包是否已安装（卸载时只移除真正存在的包）
+pkg_installed() {
+    case "$DISTRO_FAMILY" in
+        alpine)      apk info -e "$1" >/dev/null 2>&1 ;;
+        debian)      dpkg -s "$1" >/dev/null 2>&1 ;;
+        arch)        pacman -Q "$1" >/dev/null 2>&1 ;;
+        fedora|suse) rpm -q "$1" >/dev/null 2>&1 ;;
+        void)        xbps-query "$1" >/dev/null 2>&1 ;;
+        freebsd)     pkg info -e "$1" >/dev/null 2>&1 ;;
+        *)           return 1 ;;
     esac
 }
 
@@ -116,6 +215,9 @@ ensure_sudo() {
         HAVE_REAL_SUDO=true
     else
         warn "警告: sudo 安装失败，将以 root 身份直接执行（跳过 sudo 免密配置）。"
+        # 重新装上兼容层：后续所有 sudo 调用直接以 root 执行，
+        # 否则 set -e 下会因 "sudo: command not found" 直接退出
+        sudo() { "$@"; }
     fi
 }
 
@@ -127,9 +229,59 @@ get_home_dir() {
         home=$(getent passwd "$user" 2>/dev/null | cut -d: -f6) || true
     fi
     if [ -z "$home" ] && [ -r /etc/passwd ]; then
-        home=$(awk -F: -v u="$user" '$1==u {print $6; exit}' /etc/passwd)
+        home=$(sed -n "s|^$user:[^:]*:[^:]*:[^:]*:[^:]*:\([^:]*\):.*|\1|p" /etc/passwd)
     fi
     printf '%s\n' "$home"
+}
+
+# 把文件属主改给目标用户；组使用用户的主组（openSUSE 等已有用户的主组可能不是同名组）
+chown_user() {
+    local user=$1
+    shift
+    sudo chown "$user:$(id -gn "$user")" "$@"
+}
+
+# 本脚本生成的文件都带标记行，卸载时据此只清理自己的文件
+is_our_file() {
+    [ -f "$1" ] && grep -q 'VPS-ZSH-TAGBOARD' "$1" 2>/dev/null
+}
+
+# 删除本脚本生成的 .zprofile；若安装前备份过用户原有的 .zprofile，则还原备份
+remove_own_zprofile() {
+    local home zprofile bak f
+    home=$1
+    zprofile="$home/.zprofile"
+    bak=""
+    if [ -f "$zprofile" ]; then
+        if is_our_file "$zprofile"; then
+            sudo rm -f "$zprofile"
+        else
+            warn "警告: $zprofile 不是本脚本生成的，已保留。"
+            return 0
+        fi
+    fi
+    for f in "$home"/.zprofile.*.bak; do
+        [ -f "$f" ] || continue
+        bak=$f
+    done
+    if [ -n "$bak" ]; then
+        sudo cp "$bak" "$zprofile"
+        chown_user "$TARGET_USER" "$zprofile"
+        echo "已从备份还原 $zprofile（备份: $(basename "$bak")）"
+    fi
+}
+
+# 写入 .zprofile 前，备份用户原有的 .zprofile（非本脚本生成时才备份）
+backup_user_zprofile() {
+    local zprofile=$1 bak
+    if [ -f "$zprofile" ] && ! is_our_file "$zprofile"; then
+        bak="${zprofile}.$(date +%Y%m%d).bak"
+        if [ ! -f "$bak" ]; then
+            sudo cp "$zprofile" "$bak"
+            chown_user "$TARGET_USER" "$bak"
+            echo "已备份原有 .zprofile 至 $(basename "$bak")"
+        fi
+    fi
 }
 
 # 修改登录 Shell（Alpine 的 BusyBox 通常没有 chsh，回退到 usermod 或直接改 /etc/passwd）
@@ -192,13 +344,14 @@ write_zshrc() {
 
     if [ -f "$zshrc" ] && [ ! -f "$bak_file" ]; then
         sudo cp "$zshrc" "$bak_file"
+        chown_user "$TARGET_USER" "$bak_file"
     fi
 
     # 第一部分：插件与补全（公共）
     sudo tee "$zshrc" > /dev/null << 'ZSHRC_HEAD_EOF'
 # VPS-ZSH-TAGBOARD
 
-# 语法高亮（兼容 Debian / Alpine / FreeBSD 的安装路径）
+# 语法高亮（兼容 Debian/Fedora 系、Arch/openSUSE/Void、Alpine、FreeBSD 的安装路径）
 for _zsh_hl in \
     /usr/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh \
     /usr/share/zsh/plugins/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh \
@@ -207,7 +360,7 @@ for _zsh_hl in \
 done
 unset _zsh_hl
 
-# 自动建议（根据历史记录提示命令；兼容 Debian / Alpine / FreeBSD 路径）
+# 自动建议（根据历史记录提示命令；兼容各发行版的插件路径）
 for _zsh_as in \
     /usr/share/zsh-autosuggestions/zsh-autosuggestions.zsh \
     /usr/share/zsh/plugins/zsh-autosuggestions/zsh-autosuggestions.zsh \
@@ -284,7 +437,12 @@ if [[ -z "$OS_ID" && "$(uname -s)" == "FreeBSD" ]]; then
    OS_ID=freebsd
 fi
 typeset -A colors
-colors=(debian 125 ubuntu 202 kali 231 raspbian 125 pop 202 deepin 125 devuan 60 alpine 39 freebsd '#AB2B28' default 10)
+colors=(debian 125 ubuntu 202 kali 231 raspbian 125 pop 202 deepin 125 devuan 60
+        linuxmint '#87CF3E'
+        arch '#1793D1' manjaro '#35BF5C' endeavouros '#7F7FFF' cachyos '#00AEEF' garuda '#FF6B00'
+        fedora '#3C6EB4' rhel '#CC0000' centos '#932279' rocky '#10B981' almalinux '#0F4266' ol '#C74634' amzn '#FF9900'
+        opensuse '#73BA25' suse '#73BA25' opensuse-leap '#73BA25' opensuse-tumbleweed '#73BA25'
+        void '#478061' alpine 39 freebsd '#AB2B28' default 10)
 MY_CLR=${colors[$OS_ID]:-$colors[default]}
 PROMPT="%F{$MY_CLR}%n@%m%f:%F{blue}%~%f%# "
 ZSHRC_TAIL_EOF
@@ -344,7 +502,9 @@ setup_zsh_base() {
         SUDO_FILE="$SUDOERS_DIR/$TARGET_USER"
         sudo mkdir -p "$SUDOERS_DIR"
         # 确认 sudoers 真的 include 了这个目录，否则配置不会生效
-        if ! sudo grep -qsE "^[#@]includedir[[:space:]]+$SUDOERS_DIR" /etc/sudoers /usr/local/etc/sudoers 2>/dev/null; then
+        # （openSUSE 的 sudoers 默认在 /usr/etc/sudoers，同时 include /etc/sudoers.d）
+        if ! sudo grep -qsE "^[#@]includedir[[:space:]]+$SUDOERS_DIR" \
+                /etc/sudoers /usr/etc/sudoers /usr/local/etc/sudoers 2>/dev/null; then
             warn "警告: sudoers 未包含 $SUDOERS_DIR，免密配置可能不生效。"
         fi
         sudo tee "$SUDO_FILE" > /dev/null << SUDO_EOF
@@ -364,8 +524,8 @@ SUDO_EOF
     fi
     write_zshrc "$TARGET_HOME" "$ENABLE_HIST"
 
-    # 修正权限
-    sudo chown -R "$TARGET_USER:$TARGET_USER" "$TARGET_HOME"
+    # 只修正本脚本生成的 .zshrc 属主，不再递归 chown 整个家目录
+    chown_user "$TARGET_USER" "$TARGET_HOME/.zshrc"
 }
 
 # 完整安装（Zsh + 看板）
@@ -433,15 +593,38 @@ do_install() {
         fi
     done
 
-    # 系统静态信息（FreeBSD 没有 /proc，改用 sysctl）
+    # 系统静态信息（FreeBSD 没有 /proc，改用 sysctl；探测失败时回退到安全默认值）
     if [ "$DISTRO_FAMILY" = "freebsd" ]; then
-        CPU_CORES=$(sysctl -n hw.ncpu 2>/dev/null || echo 1)
-        MEM_RAW=$(( $(sysctl -n hw.physmem 2>/dev/null || echo 0) / 1024 / 1024 ))
+        _cpu=$(sysctl -n hw.ncpu 2>/dev/null || true)
+        _mem_kb=$(( $(sysctl -n hw.physmem 2>/dev/null || echo 0) / 1024 ))
     else
-        CPU_CORES=$(nproc 2>/dev/null || grep -c '^processor' /proc/cpuinfo 2>/dev/null || echo 1)
-        MEM_RAW=$(( $(grep MemTotal /proc/meminfo | awk '{print $2}') / 1024 ))
+        _cpu=$(nproc 2>/dev/null || true)
+        if [ -z "$_cpu" ]; then
+            _cpu=$(grep -c '^processor' /proc/cpuinfo 2>/dev/null || true)
+        fi
+        # 不用 awk：openSUSE 等最小镜像可能没装 gawk/mawk
+        _mem_kb=""
+        if [ -r /proc/meminfo ]; then
+            while read -r _key _val _rest; do
+                if [ "$_key" = "MemTotal:" ]; then
+                    _mem_kb=$_val
+                    break
+                fi
+            done < /proc/meminfo
+        fi
     fi
-    if [ "$MEM_RAW" -lt 900 ]; then
+    case ${_cpu:-} in
+        ''|*[!0-9]*) CPU_CORES=1 ;;
+        *)           CPU_CORES=$_cpu ;;
+    esac
+    [ "$CPU_CORES" -ge 1 ] || CPU_CORES=1
+    case ${_mem_kb:-} in
+        ''|*[!0-9]*) _mem_kb=0 ;;
+    esac
+    MEM_RAW=$(( _mem_kb / 1024 ))
+    if [ "$MEM_RAW" -lt 1 ]; then
+        MEM_SIZE="?MB"
+    elif [ "$MEM_RAW" -lt 900 ]; then
         MEM_SIZE="${MEM_RAW}MB"
     else
         MEM_SIZE="$(( (MEM_RAW + 512) / 1024 ))GB"
@@ -464,12 +647,12 @@ do_install() {
         printf "MEM_SIZE='%s'\n"  "$(sq "$MEM_SIZE")"
         printf "OS_NAME='%s'\n"   "$(sq "$OS_NAME")"
     } | sudo tee "$CONF_FILE" > /dev/null
-    sudo chown "$TARGET_USER:$TARGET_USER" "$CONF_FILE"
 
     # 写欢迎看板脚本
     WELCOME_SH="${TARGET_HOME}/.welcome.sh"
     sudo tee "$WELCOME_SH" > /dev/null << 'WELCOME_EOF'
 #!/bin/zsh
+# VPS-ZSH-TAGBOARD
 source ~/.welcome.conf
 
 zmodload zsh/datetime
@@ -552,7 +735,7 @@ fi
 
 TAGS=""
 for val in "$IN_P" "$IN_L" "$IN_N"; do
-    [ -n "$val" ] && TAGS="$TAGS • $val"
+    [ -n "$val" ] && TAGS="${TAGS:+$TAGS • }$val"
 done
 
 if [ "$ADD_VAL" = "infinite" ] && [ -z "$TAGS" ]; then
@@ -561,21 +744,31 @@ fi
 
 echo ""
 echo -e "${WHITE}[$OS_NAME] ${CPU_CORES}C/${MEM_SIZE}${RESET}"
-echo -e "$DISP${WHITE}$TAGS ${RESET}"
+# DISP 与 TAGS 都为空（跳过看板且无标签）时连标签行一起省略，避免输出空行
+if [ -n "$DISP$TAGS" ]; then
+    _sep=""
+    [ -n "$DISP" ] && [ -n "$TAGS" ] && _sep=" • "
+    echo -e "$DISP${WHITE}${_sep}${TAGS}${RESET}"
+fi
 echo ""
 WELCOME_EOF
 
     sudo chmod +x "$WELCOME_SH"
 
-    # 创建 .zprofile 自动加载
+    # 创建 .zprofile 自动加载（若用户原有的 .zprofile 不是本脚本生成的，先备份）
     ZPROFILE="${TARGET_HOME}/.zprofile"
+    backup_user_zprofile "$ZPROFILE"
     sudo tee "$ZPROFILE" > /dev/null << 'ZPROFILE_EOF'
-[[ -f ~/.zshrc ]] && source ~/.zshrc
+# VPS-ZSH-TAGBOARD
+# 交互式登录 Shell 会由 zsh 自己读取 ~/.zshrc，这里只在非交互登录时补加载，避免重复执行
+if [[ ! -o interactive && -f ~/.zshrc ]]; then
+    source ~/.zshrc
+fi
 [[ -f ~/.welcome.sh ]] && source ~/.welcome.sh
 ZPROFILE_EOF
 
-    # 统一修正权限
-    sudo chown -R "$TARGET_USER:$TARGET_USER" "$TARGET_HOME"
+    # 统一修正权限（只处理本脚本生成的文件，不递归 chown 整个家目录）
+    chown_user "$TARGET_USER" "$CONF_FILE" "$WELCOME_SH" "$ZPROFILE"
 
     say "\n${C_GREEN}状态: 配置完成！${C_RESET}"
     echo "------------------------------------------------"
@@ -607,7 +800,7 @@ do_remove_welcome() {
         fail "错误: 用户 $TARGET_USER 不存在。"
         return 1
     fi
-    say "\n${C_YELLOW}即将删除以下文件 (若存在)：${C_RESET}"
+    say "\n${C_YELLOW}即将清理看板文件（.zprofile 若为脚本生成则删除并还原备份，否则保留）：${C_RESET}"
     for f in "$TARGET_HOME/.welcome.sh" "$TARGET_HOME/.welcome.conf" "$TARGET_HOME/.zprofile"; do
         if [ -f "$f" ]; then
             echo "  $f"
@@ -619,9 +812,8 @@ do_remove_welcome() {
         *) echo "已取消。"; return ;;
     esac
 
-    for f in "$TARGET_HOME/.welcome.sh" "$TARGET_HOME/.welcome.conf" "$TARGET_HOME/.zprofile"; do
-        sudo rm -f "$f"
-    done
+    sudo rm -f "$TARGET_HOME/.welcome.sh" "$TARGET_HOME/.welcome.conf"
+    remove_own_zprofile "$TARGET_HOME"
     say "${C_GREEN}看板及相关文件已移除，Zsh 配置本身未改动。${C_RESET}"
 }
 
@@ -644,7 +836,8 @@ do_uninstall() {
     fail "\n警告：即将对用户 $TARGET_USER 执行彻底卸载！"
     echo "操作包括："
     echo "  - 将默认 Shell 还原为 $RESTORE_SHELL"
-    echo "  - 删除看板文件 (~/.welcome.sh, ~/.welcome.conf, ~/.zprofile)"
+    echo "  - 删除看板文件 (~/.welcome.sh, ~/.welcome.conf)"
+    echo "  - 还原安装前的 ~/.zprofile 备份（如有）"
     echo "  - 移除 sudo 免密配置 ($SUDOERS_DIR/$TARGET_USER)"
     echo "  - (可选) 彻底移除 Zsh 包"
     ask "确认继续？(y/N): " CONFIRM
@@ -658,10 +851,11 @@ do_uninstall() {
         echo "警告: 还原 Shell 失败，请手动执行 chsh -s $RESTORE_SHELL $TARGET_USER"
     fi
 
-    # 移除看板文件
+    # 移除看板文件（.zprofile 仅在确认是本脚本生成时才删除，随后还原备份）
     TARGET_HOME=$(get_home_dir "$TARGET_USER")
     if [ -n "$TARGET_HOME" ]; then
-        sudo rm -f "$TARGET_HOME/.welcome.sh" "$TARGET_HOME/.welcome.conf" "$TARGET_HOME/.zprofile"
+        sudo rm -f "$TARGET_HOME/.welcome.sh" "$TARGET_HOME/.welcome.conf"
+        remove_own_zprofile "$TARGET_HOME"
     else
         echo "警告: 未找到用户 $TARGET_USER，跳过看板文件清理。"
     fi
@@ -677,18 +871,20 @@ do_uninstall() {
     ask "是否彻底移除 Zsh 软件包？(y/N): " PURGE_ZSH
     case $PURGE_ZSH in
         [Yy])
-            if [ "$DISTRO_FAMILY" = "alpine" ] || [ "$DISTRO_FAMILY" = "freebsd" ]; then
-                if pkg_purge zsh zsh-syntax-highlighting zsh-autosuggestions; then
-                    echo "Zsh 及相关包已移除。"
-                else
-                    echo "警告: 部分 Zsh 相关包移除失败，请手动移除。"
+            # 只传入已安装的包，避免某个插件当初没装上导致整条移除命令失败
+            PURGE_LIST=""
+            for _p in zsh zsh-syntax-highlighting zsh-autosuggestions; do
+                if pkg_installed "$_p"; then
+                    PURGE_LIST="$PURGE_LIST $_p"
                 fi
+            done
+            if [ -z "$PURGE_LIST" ]; then
+                echo "未发现需要移除的 Zsh 相关包。"
+            # 故意不加引号，让 PURGE_LIST 按空格拆成多个包名
+            elif pkg_purge $PURGE_LIST; then
+                echo "Zsh 及相关包已移除。"
             else
-                if pkg_purge zsh; then
-                    echo "Zsh 包已移除。"
-                else
-                    echo "警告: Zsh 包移除失败。"
-                fi
+                echo "警告: 部分 Zsh 相关包移除失败，请手动移除。"
             fi ;;
     esac
 
