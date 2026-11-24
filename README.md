@@ -69,31 +69,16 @@ Debian / Arch / Fedora / openSUSE / Void / Alpine / FreeBSD 通用 Zsh 看板脚
 
 脚本会根据 `/etc/os-release`（或包管理器）自动识别发行版，调用对应的包管理器安装 Zsh 和插件。
 
-**Debian / Ubuntu 等衍生版**（系统自带 sh，只需要 curl）：
+**Debian / Arch / Fedora / RHEL / openSUSE 等主流发行版**（命令完全相同，`/bin/sh` + `curl` 即可）：
 
 ```sh
 sh -c "$(curl -fsSL https://raw.githubusercontent.com/rsdgnchen/vps-zsh-tag/main/install.sh)"
 ```
 
-**Arch Linux / Manjaro / EndeavourOS / Arch Linux ARM**（自带 curl 与 pacman）：
+覆盖范围：Debian 系（Ubuntu、Kali、Raspbian、Linux Mint 等）、Arch 系（Manjaro、EndeavourOS、CachyOS、Arch Linux ARM 等）、Fedora / RHEL 系（CentOS Stream、Rocky、AlmaLinux、Oracle Linux、Amazon Linux）、openSUSE Leap / Tumbleweed。
 
-```sh
-sh -c "$(curl -fsSL https://raw.githubusercontent.com/rsdgnchen/vps-zsh-tag/main/install.sh)"
-```
-
-**Fedora / RHEL / CentOS Stream / Rocky / AlmaLinux / Amazon Linux**（自带 curl 与 dnf/yum）：
-
-```sh
-sh -c "$(curl -fsSL https://raw.githubusercontent.com/rsdgnchen/vps-zsh-tag/main/install.sh)"
-```
-
-> RHEL / Rocky / AlmaLinux 如需 zsh 语法高亮与自动建议，需先启用 EPEL 源（详见下方「Fedora / RHEL 系说明」）。
-
-**openSUSE Leap / Tumbleweed**（自带 curl 与 zypper）：
-
-```sh
-sh -c "$(curl -fsSL https://raw.githubusercontent.com/rsdgnchen/vps-zsh-tag/main/install.sh)"
-```
+- Debian 最小系统若没有 curl：先 `apt update && apt install -y curl`
+- RHEL / Rocky / AlmaLinux 如需 zsh 语法高亮与自动建议，需先启用 EPEL 源（详见下方「Fedora / RHEL 系说明」）
 
 **Void Linux**（需要 curl，可用 xbps 安装）：
 
@@ -218,34 +203,36 @@ sh -c "$(fetch -qo - https://raw.githubusercontent.com/rsdgnchen/vps-zsh-tag/mai
 - `ls` 彩色优先用 `--color=auto`（FreeBSD 15+），老版本回退到 `-G` + `LSCOLORS`
 - 卸载时把登录 Shell 还原为 `/bin/sh`，并移除 zsh 相关包
 
+### Linux 发行版通用行为
+
+Debian / Arch / Fedora/RHEL / openSUSE / Void 共用以下行为，差异只在包管理器与插件路径：
+
+- 安装 `zsh`、`zsh-syntax-highlighting`、`zsh-autosuggestions`、`sudo`；插件包缺失时只给出警告，Zsh 与看板照常工作
+- 用户创建使用 `useradd -m`；`chsh` 前自动把 zsh 路径登记进 `/etc/shells`
+- 备份原有 `.zshrc` / `.zprofile`；卸载时删除看板文件并还原 `.zprofile`
+- 卸载时把登录 Shell 还原为 `/bin/bash`（不存在时回退 `/bin/sh`），并只移除真正安装过的 zsh 相关包
+
 ### Arch Linux 说明
 
 - 通过 `/etc/os-release` 的 `ID=arch` / `ID_LIKE=arch` 识别（覆盖 Manjaro、EndeavourOS、CachyOS、Garuda、Arch Linux ARM），使用 `pacman` 安装与卸载
-- 安装 `zsh`、`zsh-syntax-highlighting`、`zsh-autosuggestions`、`sudo`；插件路径为 `/usr/share/zsh/plugins/...`
+- 插件路径为 `/usr/share/zsh/plugins/...`
 - pacman 7 的下载沙盒在部分 LXC / 容器环境中不可用，脚本会自动检测并改用 `--disable-sandbox` 重试
-- 用户创建使用 `useradd -m`；`chsh` 前自动把 zsh 路径登记进 `/etc/shells`
-- 卸载时把登录 Shell 还原为 `/bin/bash`，并移除已安装的 zsh 相关包
 
 ### Fedora / RHEL 系说明
 
 - 通过 `ID` / `ID_LIKE` 识别 Fedora、RHEL、CentOS Stream、Rocky Linux、AlmaLinux、Oracle Linux、Amazon Linux，优先使用 `dnf`，只有 `yum` 的系统自动回退
-- 安装 `zsh`、`zsh-syntax-highlighting`、`zsh-autosuggestions`、`sudo`
 - RHEL / Rocky / AlmaLinux 的 zsh 插件包通常来自 EPEL：未启用 EPEL 时插件会安装失败并给出警告，Zsh 与看板仍可正常使用
-- 卸载时把登录 Shell 还原为 `/bin/bash`，并移除已安装的 zsh 相关包
 
 ### openSUSE 说明
 
 - 通过 `ID` / `ID_LIKE` 识别 openSUSE Leap / Tumbleweed / SLES，使用 `zypper` 安装与卸载
 - `zypper` 刷新/安装时自动导入 GPG 密钥（`--gpg-auto-import-keys`），适合非交互环境
-- 安装 `zsh` 与 `sudo`；插件路径兼容 `/usr/share/zsh/plugins/...`
 - openSUSE 官方 OSS 源未收录 `zsh-syntax-highlighting` / `zsh-autosuggestions`（`shells` 源也只有 zsh 本体），脚本会跳过插件并给出警告；Zsh 与看板仍可正常使用，需要高亮/自动建议时可从上游项目手动安装
-- 卸载时把登录 Shell 还原为 `/bin/bash`，并移除已安装的 zsh 相关包
 
 ### Void Linux 说明
 
 - 通过 `ID=void` 识别，使用 `xbps-install` / `xbps-remove` 安装与卸载
-- 安装 `zsh`、`zsh-syntax-highlighting`、`zsh-autosuggestions`、`sudo`
-- 卸载时把登录 Shell 还原为 `/bin/bash`（不存在时回退 `/bin/sh`），并移除已安装的 zsh 相关包
+- xbps 过旧、无法解析新仓库元数据时，脚本会先升级 xbps 并重新同步
 
 ### 其他发行版识别方式
 
